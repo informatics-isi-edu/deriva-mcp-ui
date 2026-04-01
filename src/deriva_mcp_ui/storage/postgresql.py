@@ -1,8 +1,8 @@
 """PostgreSQL session store backend.
 
-Uses asyncpg with per-connection prepared statements. The pool init callback runs DDL (idempotent) and
-prepares all statements on each new connection so query planning is done once
-per connection rather than on every call.
+Uses asyncpg. The pool init callback runs DDL (idempotent) on each new
+connection. Queries use asyncpg's built-in statement cache (enabled by
+default) so the query plan is reused without manual statement preparation.
 """
 
 from __future__ import annotations
@@ -22,7 +22,6 @@ CREATE TABLE IF NOT EXISTS chatbot_sessions (
 )
 """
 
-# Prepared statement SQL -- referenced by name in comments below
 _SQL_GET = "SELECT data FROM chatbot_sessions WHERE session_id = $1 AND expires_at > NOW()"
 
 _SQL_UPSERT = """
@@ -38,19 +37,8 @@ _SQL_SWEEP = "DELETE FROM chatbot_sessions WHERE expires_at <= NOW()"
 
 
 async def _init_conn(conn) -> None:
-    """Called by asyncpg for each new pool connection.
-
-    Runs the schema DDL once per connection (idempotent) then prepares all statements
-    so the query plan is cached at the wire-protocol level for that connection.
-    """
+    """Called by asyncpg for each new pool connection. Runs DDL (idempotent)."""
     await conn.execute(_CREATE_TABLE)
-    # Store PreparedStatement objects as connection attributes so callers can
-    # invoke them without re-preparing on every request.
-    conn._stmt_get = await conn.prepare(_SQL_GET)
-    conn._stmt_upsert = await conn.prepare(_SQL_UPSERT)
-    conn._stmt_delete = await conn.prepare(_SQL_DELETE)
-    conn._stmt_sweep = await conn.prepare(_SQL_SWEEP)
-    logger.debug("PostgreSQL connection initialized with prepared statements")
 
 
 class PostgreSQLSessionStore:
@@ -70,14 +58,13 @@ class PostgreSQLSessionStore:
     async def _get_pool(self):
         if self._pool is None:
             import asyncpg
-
             self._pool = await asyncpg.create_pool(self._url, init=_init_conn)
         return self._pool
 
     async def get(self, session_id: str) -> Session | None:
         pool = await self._get_pool()
         async with pool.acquire() as conn:
-            row = await conn._stmt_get.fetchrow(session_id)
+            row = await conn.fetchrow(_SQL_GET, session_id)
         if row is None:
             return None
         return Session.from_json(row["data"])
@@ -86,14 +73,14 @@ class PostgreSQLSessionStore:
         expires_at = datetime.now(UTC) + timedelta(seconds=self._ttl)
         pool = await self._get_pool()
         async with pool.acquire() as conn:
-            await conn._stmt_upsert.execute(session_id, session.to_json(), expires_at)
+            await conn.execute(_SQL_UPSERT, session_id, session.to_json(), expires_at)
 
     async def delete(self, session_id: str) -> None:
         pool = await self._get_pool()
         async with pool.acquire() as conn:
-            await conn._stmt_delete.execute(session_id)
+            await conn.execute(_SQL_DELETE, session_id)
 
     async def sweep(self) -> None:
         pool = await self._get_pool()
         async with pool.acquire() as conn:
-            await conn._stmt_sweep.execute()
+            await conn.execute(_SQL_SWEEP)
