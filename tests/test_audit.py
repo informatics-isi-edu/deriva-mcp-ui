@@ -13,6 +13,7 @@ from deriva_mcp_ui.audit import audit_event, init_audit_logger
 def _reset_audit_logger():
     """Reset the audit logger state between tests."""
     import deriva_mcp_ui.audit as _audit
+
     original = _audit._initialized
     _audit._initialized = False
     # Clear any handlers added by a previous call

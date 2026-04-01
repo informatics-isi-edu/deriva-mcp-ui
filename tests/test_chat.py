@@ -27,7 +27,6 @@ def _settings(**kw) -> Settings:
         client_id="cid",
         mcp_resource="https://mcp.example.org",
         public_url="https://chatbot.example.org",
-
         anthropic_api_key="sk-ant-test",
         claude_model="claude-haiku-4-5-20251001",
         max_history_turns=5,
@@ -180,7 +179,7 @@ def test_trim_history_skips_orphaned_tool_result():
             "role": "assistant",
             "content": [{"type": "tool_use", "id": "toolu_123", "name": "get_schema", "input": {}}],
         },
-        tool_result_user,       # orphaned if trim starts here
+        tool_result_user,  # orphaned if trim starts here
         assistant_after_tools,
         plain_user,
         assistant_reply,
@@ -329,7 +328,10 @@ async def test_run_chat_turn_yields_tool_events():
 
     tool_block = _tool_block("tid-dbg", "get_entities", {"limit": 5})
     tool_block.model_dump.return_value = {
-        "type": "tool_use", "id": "tid-dbg", "name": "get_entities", "input": {"limit": 5},
+        "type": "tool_use",
+        "id": "tid-dbg",
+        "name": "get_entities",
+        "input": {"limit": 5},
     }
     final_tool = _final_message([tool_block], stop_reason="tool_use")
     final_end = _final_message([_text_block("Done")], stop_reason="end_turn")
@@ -478,7 +480,6 @@ def _default_settings(**kw) -> Settings:
         client_id="cid",
         mcp_resource="https://mcp.example.org",
         public_url="https://chatbot.example.org",
-
         anthropic_api_key="sk-ant-test",
         claude_model="claude-haiku-4-5-20251001",
         max_history_turns=5,
@@ -725,7 +726,6 @@ async def test_run_chat_turn_retries_on_rate_limit():
 async def test_run_chat_turn_raises_after_max_retries():
     """Exhausting all retries re-raises the last exception."""
     import anthropic as _anthropic
-    from deriva_mcp_ui.chat import _MAX_API_RETRIES
 
     s = _settings()
     sess = _session()

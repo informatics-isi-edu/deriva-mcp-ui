@@ -240,19 +240,23 @@ async def test_sweep_removes_expired_memory(monkeypatch):
 
 def test_create_store_memory_no_url():
     from deriva_mcp_ui.storage import create_store
+
     store = create_store("memory", "", ttl=60)
     from deriva_mcp_ui.storage.memory import MemorySessionStore
+
     assert isinstance(store, MemorySessionStore)
 
 
 def test_create_store_unknown_backend_raises():
     from deriva_mcp_ui.storage import create_store
+
     with pytest.raises(ValueError, match="Unknown storage backend"):
         create_store("bogus", "bogus://url")
 
 
 def test_create_store_missing_url_raises():
     from deriva_mcp_ui.storage import create_store
+
     with pytest.raises(ValueError, match="STORAGE_BACKEND_URL"):
         create_store("sqlite", "")
 
@@ -261,5 +265,6 @@ def test_create_store_lazy_import_sqlite():
     """create_store hits the importlib lazy-import path for non-memory backends."""
     from deriva_mcp_ui.storage import create_store
     from deriva_mcp_ui.storage.sqlite import SQLiteSessionStore
+
     store = create_store("sqlite", "/tmp/test-deriva-mcp-ui.db", ttl=60)
     assert isinstance(store, SQLiteSessionStore)

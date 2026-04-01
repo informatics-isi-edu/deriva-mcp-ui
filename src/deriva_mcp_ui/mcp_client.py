@@ -118,7 +118,7 @@ async def list_tools(bearer_token: str, mcp_url: str) -> list[AnthropicTool]:
     for tool in result.tools:
         entry: AnthropicTool = {
             "name": tool.name,
-            "input_schema": _slim_input_schema(tool.inputSchema if tool.inputSchema is not None else {}),
+            "input_schema": _slim_input_schema(tool.inputSchema if tool.inputSchema is not None else {})
         }
         if tool.description:
             entry["description"] = tool.description

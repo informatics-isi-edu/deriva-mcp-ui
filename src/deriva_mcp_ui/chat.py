@@ -271,7 +271,7 @@ async def run_chat_turn(
                         yield {"type": "text", "content": text}
                     response = await stream.get_final_message()
                 break  # success -- exit retry loop
-            except anthropic.RateLimitError as exc:
+            except anthropic.RateLimitError:
                 if text_yielded or attempt >= _MAX_API_RETRIES:
                     raise
                 delay = _RETRY_BASE_DELAY * (2 ** attempt)

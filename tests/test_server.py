@@ -76,9 +76,10 @@ async def test_chat_message_too_long(app_and_store):
     now = time.time()
     session = Session(user_id="alice", bearer_token=bearer, created_at=now, last_active=now)
     await store.set(user_session_key("alice"), session)
-    await store.set(_token_key(bearer), Session(
-        user_id="alice", bearer_token=bearer, created_at=now, last_active=now
-    ))
+    await store.set(
+        _token_key(bearer),
+        Session(user_id="alice", bearer_token=bearer, created_at=now, last_active=now),
+    )
 
     client = TestClient(app)
     long_msg = "x" * 10001

@@ -213,10 +213,15 @@ async def test_callback_preserves_history_on_reauth(app_and_store):
         last_active=time.time(),
     )
     await store.set(user_session_key("alice@example.org"), existing)
-    await store.set(_token_key(old_bearer), Session(
-        user_id="alice@example.org", bearer_token=old_bearer,
-        created_at=time.time(), last_active=time.time(),
-    ))
+    await store.set(
+        _token_key(old_bearer),
+        Session(
+            user_id="alice@example.org",
+            bearer_token=old_bearer,
+            created_at=time.time(),
+            last_active=time.time(),
+        ),
+    )
 
     # User re-authenticates with a new token
     state = "reauth-state"
@@ -259,9 +264,10 @@ async def test_logout_clears_session(app_and_store):
     now = time.time()
     session = Session(user_id="alice", bearer_token=bearer, created_at=now, last_active=now)
     await store.set(user_session_key("alice"), session)
-    await store.set(_token_key(bearer), Session(
-        user_id="alice", bearer_token=bearer, created_at=now, last_active=now
-    ))
+    await store.set(
+        _token_key(bearer),
+        Session(user_id="alice", bearer_token=bearer, created_at=now, last_active=now),
+    )
 
     from unittest.mock import AsyncMock, patch
 
@@ -302,9 +308,10 @@ async def test_session_info_with_valid_session(app_and_store):
     now = time.time()
     session = Session(user_id="bob", bearer_token=bearer, created_at=now, last_active=now)
     await store.set(user_session_key("bob"), session)
-    await store.set(_token_key(bearer), Session(
-        user_id="bob", bearer_token=bearer, created_at=now, last_active=now
-    ))
+    await store.set(
+        _token_key(bearer),
+        Session(user_id="bob", bearer_token=bearer, created_at=now, last_active=now),
+    )
 
     client = TestClient(app)
     resp = client.get("/session-info", cookies={"deriva_chatbot_session": bearer})
@@ -339,9 +346,10 @@ async def test_session_info_tok_entry_but_no_uid_session(app_and_store):
     bearer = "tok-orphan"
     now = time.time()
     # Write tok: entry pointing to a user_id that has no uid: entry
-    await store.set(_token_key(bearer), Session(
-        user_id="ghost", bearer_token=bearer, created_at=now, last_active=now
-    ))
+    await store.set(
+        _token_key(bearer),
+        Session(user_id="ghost", bearer_token=bearer, created_at=now, last_active=now),
+    )
     # uid:ghost intentionally absent
 
     client = TestClient(app)
@@ -442,9 +450,10 @@ async def test_logout_revocation_failure_is_nonfatal(app_and_store):
     now = time.time()
     session = Session(user_id="dave", bearer_token=bearer, created_at=now, last_active=now)
     await store.set(user_session_key("dave"), session)
-    await store.set(_token_key(bearer), Session(
-        user_id="dave", bearer_token=bearer, created_at=now, last_active=now
-    ))
+    await store.set(
+        _token_key(bearer),
+        Session(user_id="dave", bearer_token=bearer, created_at=now, last_active=now),
+    )
 
     from unittest.mock import AsyncMock, patch
 
