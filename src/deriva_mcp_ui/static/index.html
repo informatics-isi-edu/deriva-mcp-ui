@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DERIVA Chatbot</title>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      font-size: 15px;
+      background: #f5f5f5;
+      color: #1a1a1a;
+      height: 100dvh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ---- Header ---- */
+    #header {
+      background: #1e3a5f;
+      color: #fff;
+      padding: 0.75rem 1.25rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+    }
+    #header h1 { font-size: 1rem; font-weight: 600; letter-spacing: 0.02em; }
+    #header-right { display: flex; align-items: center; gap: 1rem; font-size: 0.85rem; opacity: 0.85; }
+    #user-label { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #logout-link { color: #a8c4e8; text-decoration: none; }
+    #logout-link:hover { text-decoration: underline; }
+
+    /* ---- Catalog context bar (general-purpose mode) ---- */
+    #catalog-bar {
+      background: #fff;
+      border-bottom: 1px solid #ddd;
+      padding: 0.5rem 1.25rem;
+      display: none;
+      gap: 0.75rem;
+      align-items: center;
+      flex-shrink: 0;
+      flex-wrap: wrap;
+    }
+    #catalog-bar label { font-size: 0.85rem; color: #555; }
+    #catalog-bar input {
+      font-size: 0.85rem;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      padding: 0.3rem 0.5rem;
+      width: 200px;
+    }
+
+    /* ---- Message thread ---- */
+    #thread {
+      flex: 1;
+      overflow-y: auto;
+      padding: 1.25rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+
+    .msg {
+      max-width: 90%;
+      padding: 0.65rem 0.9rem;
+      border-radius: 8px;
+      line-height: 1.55;
+      word-break: break-word;
+      align-self: flex-start;
+    }
+    .msg-user {
+      background: #b8d0ed;
+      color: #1a1a1a;
+      border: 1px solid #8fb3d9;
+      border-top-left-radius: 3px;
+    }
+    .msg-assistant {
+      background: #e8ecf0;
+      border: 1px solid #d0d7de;
+      border-top-left-radius: 3px;
+    }
+    .msg-assistant pre {
+      background: #f0f0f0;
+      border-radius: 5px;
+      padding: 0.6rem 0.8rem;
+      overflow-x: auto;
+      font-size: 0.85em;
+      margin: 0.5rem 0;
+    }
+    .msg-assistant code { font-family: ui-monospace, monospace; font-size: 0.88em; }
+    .msg-assistant p { margin: 0.4rem 0; }
+    .msg-assistant p:first-child { margin-top: 0; }
+    .msg-assistant p:last-child { margin-bottom: 0; }
+    .msg-assistant ul, .msg-assistant ol { padding-left: 1.4rem; margin: 0.4rem 0; }
+    .msg-assistant table { border-collapse: collapse; font-size: 0.88em; margin: 0.5rem 0; }
+    /* Separator between prose and the first structural element that follows it */
+    .msg-assistant p + ul,
+    .msg-assistant p + ol,
+    .msg-assistant p + table,
+    .msg-assistant p + h1,
+    .msg-assistant p + h2,
+    .msg-assistant p + h3,
+    .msg-assistant p + h4 {
+      border-top: 1px solid #c8cfd8;
+      margin-top: 0.6rem;
+      padding-top: 0.5rem;
+    }
+    .msg-assistant th, .msg-assistant td { border: 1px solid #ccc; padding: 0.3rem 0.6rem; }
+    .msg-assistant th { background: #f0f0f0; }
+
+    /* ---- Thinking indicator (persists until stream done) ---- */
+    .msg-thinking { padding-top: 0.3rem; }
+    .msg-thinking:empty { display: none; }
+
+    /* ---- Tool call blocks ---- */
+    .msg-tools-container {
+      margin-bottom: 0.5rem;
+      border: 1px solid #c8cfd8;
+      border-radius: 5px;
+      padding: 0.3rem 0.6rem;
+      background: #f0f3f7;
+    }
+    .msg-tools-container-summary {
+      font-size: 0.8em;
+      color: #556;
+      cursor: pointer;
+      user-select: none;
+      list-style: none;
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.2rem 0;
+    }
+    .msg-tools-container-summary::-webkit-details-marker { display: none; }
+    .msg-tools-container-summary::before {
+      content: "\25B6";
+      font-size: 0.6em;
+      color: #8899bb;
+      transition: transform 0.12s;
+    }
+    .msg-tools-container[open] > .msg-tools-container-summary::before { transform: rotate(90deg); }
+    .msg-tools { margin-top: 0.3rem; }
+    .tool-call {
+      border: 1px solid #d0d8ee;
+      border-radius: 5px;
+      margin-bottom: 0.3rem;
+      font-size: 0.82em;
+      background: #f6f8ff;
+    }
+    .tool-call-summary {
+      padding: 0.32rem 0.6rem;
+      cursor: pointer;
+      list-style: none;
+      display: flex;
+      align-items: center;
+      gap: 0.45rem;
+      user-select: none;
+    }
+    .tool-call-summary::-webkit-details-marker { display: none; }
+    .tool-call-summary::before {
+      content: "\25B6";
+      font-size: 0.6em;
+      color: #8899bb;
+      transition: transform 0.12s;
+      flex-shrink: 0;
+    }
+    .tool-call[open] > .tool-call-summary::before { transform: rotate(90deg); }
+    .tool-call-summary code {
+      font-family: ui-monospace, monospace;
+      color: #1e3a5f;
+      font-weight: 600;
+    }
+    .tool-call-status { color: #999; font-size: 0.82em; margin-left: auto; }
+    .tool-call-section {
+      padding: 0.35rem 0.6rem;
+      border-top: 1px solid #d0d8ee;
+    }
+    .tool-call-label {
+      font-size: 0.75em;
+      color: #777;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 0.2rem;
+    }
+    .tool-call-section pre {
+      font-family: ui-monospace, monospace;
+      font-size: 0.84em;
+      background: #eef0f8;
+      padding: 0.35rem 0.55rem;
+      border-radius: 4px;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+      max-height: 180px;
+      overflow-y: auto;
+      margin: 0;
+    }
+
+    .msg-error {
+      align-self: center;
+      background: #fff3cd;
+      border: 1px solid #ffc107;
+      color: #664d03;
+      font-size: 0.85rem;
+      border-radius: 6px;
+      padding: 0.5rem 0.9rem;
+    }
+
+    /* Loading dots */
+    .loading-dots span {
+      display: inline-block;
+      width: 6px; height: 6px;
+      background: #aaa;
+      border-radius: 50%;
+      margin: 0 2px;
+      animation: blink 1.2s infinite;
+    }
+    .loading-dots span:nth-child(2) { animation-delay: 0.2s; }
+    .loading-dots span:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes blink { 0%,80%,100% { opacity: 0.2; } 40% { opacity: 1; } }
+
+    /* ---- Input area ---- */
+    #input-area {
+      background: #fff;
+      border-top: 1px solid #ddd;
+      padding: 0.75rem 1.25rem;
+      display: flex;
+      gap: 0.6rem;
+      align-items: flex-end;
+      flex-shrink: 0;
+    }
+    #message-input {
+      flex: 1;
+      resize: none;
+      font-size: 0.95rem;
+      font-family: inherit;
+      border: 1px solid #ccc;
+      border-radius: 8px;
+      padding: 0.55rem 0.8rem;
+      line-height: 1.5;
+      max-height: 150px;
+      overflow-y: auto;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+    #message-input:focus { border-color: #1e3a5f; }
+    #send-btn {
+      background: #1e3a5f;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 0.55rem 1.1rem;
+      font-size: 0.95rem;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background 0.15s;
+    }
+    #send-btn:hover:not(:disabled) { background: #2a4f80; }
+    #send-btn:disabled { background: #8fa8c8; cursor: not-allowed; }
+  </style>
+</head>
+<body>
+
+<div id="header">
+  <h1 id="catalog-title">DERIVA Chatbot</h1>
+  <div id="header-right">
+    <span id="user-label"></span>
+    <a id="logout-link" href="logout">Log out</a>
+  </div>
+</div>
+
+<div id="catalog-bar">
+  <label>Hostname <input id="gp-hostname" type="text" placeholder="e.g. facebase.org"></label>
+  <label>Catalog ID <input id="gp-catalog-id" type="text" placeholder="e.g. 1"></label>
+</div>
+
+<div id="thread"></div>
+
+<div id="input-area">
+  <textarea id="message-input" rows="1" placeholder="Ask a question..." aria-label="Message"></textarea>
+  <button id="send-btn">Send</button>
+</div>
+
+<script src="static/chat.js"></script>
+</body>
+</html>
