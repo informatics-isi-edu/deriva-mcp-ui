@@ -161,30 +161,32 @@ ProxyPassReverse /chatbot/ http://127.0.0.1:8001/
 Add an entry to `config/client_registry.json`:
 
 ```json
-"deriva-chatbot": {
-"desc": "DERIVA Chatbot (public, PKCE-only)",
-"enabled": true,
-"public": true,
-"allowed_grant_types": [
-"authorization_code"
-],
-"allowed_redirect_uris": [
-"https://your-host.example.org/chatbot/callback",
-"http://localhost:8001/callback"
-],
-"allowed_resources": [
-"urn:deriva:rest:service:all",
-"https://your-host.example.org/mcp"
-],
-"allowed_scopes": [
-"openid"
-],
-"require_consent": true,
-"consent_display_name": "DERIVA Chatbot Server",
-"consent_labels": {
-"https://your-host.example.org/mcp": "Connect to the DERIVA MCP Server at this URL"
-},
-"max_session_ttl_seconds": 28800
+{
+  "deriva-chatbot": {
+    "desc": "DERIVA Chatbot (public, PKCE-only)",
+    "enabled": true,
+    "public": true,
+    "allowed_grant_types": [
+      "authorization_code"
+    ],
+    "allowed_redirect_uris": [
+      "https://your-host.example.org/chatbot/callback",
+      "http://localhost:8001/callback"
+    ],
+    "allowed_resources": [
+      "urn:deriva:rest:service:all",
+      "https://your-host.example.org/mcp"
+    ],
+    "allowed_scopes": [
+      "openid"
+    ],
+    "require_consent": true,
+    "consent_display_name": "DERIVA Chatbot Server",
+    "consent_labels": {
+      "https://your-host.example.org/mcp": "Connect to the DERIVA MCP Server at this URL"
+    },
+    "max_session_ttl_seconds": 28800
+  }
 }
 ```
 
