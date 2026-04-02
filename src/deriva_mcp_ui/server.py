@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .audit import audit_event, init_audit_logger
-from .auth import RequireSession, _extract_display_name, user_session_key
+from .auth import ANON_COOKIE_NAME, RequireSession, _extract_display_name, user_session_key
 from .auth import router as auth_router
 from .chat import run_chat_turn
 from .config import Settings
@@ -108,6 +108,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = settings
     app.state.store = None  # set during lifespan
 
+    @app.middleware("http")
+    async def _anon_cookie_middleware(request: Request, call_next):  # type: ignore[misc]
+        response = await call_next(request)
+        new_anon = getattr(request.state, "new_anon_id", None)
+        if new_anon is not None:
+            anon_id, max_age = new_anon
+            response.set_cookie(
+                ANON_COOKIE_NAME,
+                anon_id,
+                httponly=True,
+                samesite="lax",
+                path="/",
+                max_age=max_age,
+            )
+        return response
+
     app.include_router(auth_router)
 
     import pathlib
@@ -127,10 +143,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/session-info")
     async def session_info(session: RequireSession, request: Request):  # type: ignore[misc]
         s: Settings = request.app.state.settings
+        display_name = (
+            "Anonymous"
+            if not s.auth_enabled
+            else (_extract_display_name(session.credenza_session) or session.user_id)
+        )
         return JSONResponse(
             {
                 "user_id": session.user_id,
-                "display_name": _extract_display_name(session.credenza_session) or session.user_id,
+                "display_name": display_name,
                 "catalog_mode": "default" if s.default_catalog_mode else "general",
                 "label": s.default_catalog_label or s.default_hostname or "",
                 "credenza_session": session.credenza_session,

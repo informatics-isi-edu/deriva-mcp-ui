@@ -42,16 +42,32 @@ class Settings(BaseSettings):
     storage_backend_url: str = ""
     debug: bool = False
 
+    @property
+    def auth_enabled(self) -> bool:
+        """True when Credenza is configured and the OAuth login flow is active."""
+        return bool(self.credenza_url)
+
     def validate_for_http(self) -> None:
-        """Raise ValueError if any required field is missing."""
-        required = {
-            "DERIVA_CHATBOT_MCP_URL": self.mcp_url,
-            "DERIVA_CHATBOT_CREDENZA_URL": self.credenza_url,
-            "DERIVA_CHATBOT_CLIENT_ID": self.client_id,
-            "DERIVA_CHATBOT_MCP_RESOURCE": self.mcp_resource,
-            "DERIVA_CHATBOT_PUBLIC_URL": self.public_url,
-            "ANTHROPIC_API_KEY": self.anthropic_api_key,
-        }
+        """Raise ValueError if any required field is missing.
+
+        When credenza_url is not set the server operates in anonymous mode:
+        no login flow, no bearer token forwarded to the MCP server.  Only
+        mcp_url and anthropic_api_key are required in that case.
+        """
+        if self.auth_enabled:
+            required = {
+                "DERIVA_CHATBOT_MCP_URL": self.mcp_url,
+                "DERIVA_CHATBOT_CREDENZA_URL": self.credenza_url,
+                "DERIVA_CHATBOT_CLIENT_ID": self.client_id,
+                "DERIVA_CHATBOT_MCP_RESOURCE": self.mcp_resource,
+                "DERIVA_CHATBOT_PUBLIC_URL": self.public_url,
+                "ANTHROPIC_API_KEY": self.anthropic_api_key,
+            }
+        else:
+            required = {
+                "DERIVA_CHATBOT_MCP_URL": self.mcp_url,
+                "ANTHROPIC_API_KEY": self.anthropic_api_key,
+            }
         missing = [k for k, v in required.items() if not v]
         if missing:
             raise ValueError(f"Missing required configuration: {', '.join(missing)}")

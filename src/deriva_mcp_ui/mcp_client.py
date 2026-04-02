@@ -51,16 +51,20 @@ class MCPAuthError(Exception):
 
 
 @contextlib.asynccontextmanager
-async def _connect(mcp_url: str, bearer_token: str):
+async def _connect(mcp_url: str, bearer_token: str | None):
     """Open a ClientSession to the MCP server and yield it, initialised.
 
     Translates transport-level errors into MCPConnectionError / MCPAuthError
     so callers do not need to handle httpx internals.
+
+    When bearer_token is None the Authorization header is omitted, which is
+    correct for servers running in allow-anonymous mode.
     """
+    headers = {"Authorization": f"Bearer {bearer_token}"} if bearer_token else {}
     try:
         async with streamablehttp_client(
             mcp_url,
-            headers={"Authorization": f"Bearer {bearer_token}"},
+            headers=headers,
         ) as (read, write, _):
             async with ClientSession(read, write) as session:
                 await session.initialize()
@@ -103,7 +107,7 @@ def _slim_input_schema(schema: dict[str, Any]) -> dict[str, Any]:
     return {**schema, "properties": slimmed}
 
 
-async def list_tools(bearer_token: str, mcp_url: str) -> list[AnthropicTool]:
+async def list_tools(bearer_token: str | None, mcp_url: str) -> list[AnthropicTool]:
     """Return the MCP server's tool list in Anthropic schema format.
 
     MCP uses camelCase 'inputSchema'; Anthropic expects 'input_schema'.
@@ -129,7 +133,7 @@ async def list_tools(bearer_token: str, mcp_url: str) -> list[AnthropicTool]:
 
 
 async def call_tool(
-    bearer_token: str,
+    bearer_token: str | None,
     name: str,
     arguments: dict[str, Any],
     mcp_url: str,

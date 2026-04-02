@@ -22,7 +22,7 @@ import logging
 import os
 import time
 from base64 import urlsafe_b64encode
-from typing import Annotated
+from typing import Annotated, Any
 from urllib.parse import urlencode
 
 import httpx
@@ -59,6 +59,7 @@ def _code_challenge(verifier: str) -> str:
 
 COOKIE_NAME = "deriva_chatbot_session"
 PKCE_COOKIE_NAME = "deriva_chatbot_pkce"
+ANON_COOKIE_NAME = "deriva_chatbot_anon"
 
 # Resource URI required by Credenza's GET /session endpoint.
 # Requested alongside the MCP resource so the issued token satisfies both
@@ -110,15 +111,21 @@ def _clear_session_cookie(response: Response) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def require_session(request: Request) -> Session:
+async def require_session(request: Request, response: Response) -> Session:
     """FastAPI dependency: return the current Session or raise 401.
 
-    Two store lookups:
+    In anonymous mode (DERIVA_CHATBOT_ANONYMOUS_MODE=true), creates or retrieves
+    a per-browser anonymous session keyed by a cookie -- no login required.
+
+    In normal mode, two store lookups:
       1. tok:{bearer} -> token index entry (yields user_id)
       2. uid:{user_id} -> full Session with history
     """
     settings: Settings = request.app.state.settings
     store = request.app.state.store
+
+    if not settings.auth_enabled:
+        return await _get_or_create_anonymous_session(request, response, settings, store)
 
     bearer_token = _get_session_id(request, settings)
     if bearer_token is None:
@@ -137,6 +144,48 @@ async def require_session(request: Request) -> Session:
     return session
 
 
+async def _get_or_create_anonymous_session(
+    request: Request,
+    response: Response,  # noqa: ARG001
+    settings: Settings,
+    store: Any,
+) -> Session:
+    """Get the existing anonymous session from the cookie, or create a new one.
+
+    Each browser gets its own session (isolated history) via an opaque random ID
+    stored in a cookie.  The session is persisted in the store under
+    uid:anonymous/<anon_id> so that the chat endpoint's normal store.set() call
+    preserves history across turns.
+
+    When a new session is created the anon_id is stashed on request.state so
+    that the _anon_cookie_middleware in server.py can attach the Set-Cookie
+    header to the outgoing response (FastAPI does not merge cookies set on the
+    injected Response object when the endpoint returns a JSONResponse directly).
+    """
+    anon_id = request.cookies.get(ANON_COOKIE_NAME)
+    if anon_id:
+        session = await store.get(user_session_key(f"anonymous/{anon_id}"))
+        if session is not None:
+            session.last_active = time.time()
+            await store.set(user_session_key(session.user_id), session)
+            return session
+
+    # New anonymous session -- generate a fresh opaque ID
+    anon_id = urlsafe_b64encode(os.urandom(16)).rstrip(b"=").decode()
+    now = time.time()
+    session = Session(
+        user_id=f"anonymous/{anon_id}",
+        bearer_token=None,
+        created_at=now,
+        last_active=now,
+    )
+    await store.set(user_session_key(session.user_id), session)
+    # Stash cookie info for _anon_cookie_middleware to attach to the response
+    request.state.new_anon_id = (anon_id, settings.session_ttl)
+    audit_event("anonymous_session_created")
+    return session
+
+
 RequireSession = Annotated[Session, Depends(require_session)]
 
 
@@ -147,8 +196,14 @@ RequireSession = Annotated[Session, Depends(require_session)]
 
 @router.get("/login")
 async def login(request: Request) -> Response:
-    """Start the OAuth authorization_code + PKCE flow."""
+    """Start the OAuth authorization_code + PKCE flow.
+
+    In anonymous mode, redirect immediately to / -- no login is needed.
+    """
     settings: Settings = request.app.state.settings
+
+    if not settings.auth_enabled:
+        return RedirectResponse("/", status_code=302)
 
     verifier = _generate_code_verifier()
     challenge = _code_challenge(verifier)
@@ -266,9 +321,24 @@ async def callback(request: Request, code: str = "", state: str = "", error: str
 
 @router.get("/logout")
 async def logout(request: Request) -> Response:
-    """Clear the server-side session, revoke the token at Credenza, and redirect to /."""
+    """Clear the server-side session and redirect to /.
+
+    In anonymous mode, clears the anonymous session cookie and returns to /.
+    In normal mode, also revokes the Credenza bearer token (RFC 7009).
+    """
     settings: Settings = request.app.state.settings
     store = request.app.state.store
+
+    if not settings.auth_enabled:
+        anon_id = request.cookies.get(ANON_COOKIE_NAME)
+        if anon_id:
+            session = await store.get(user_session_key(f"anonymous/{anon_id}"))
+            if session is not None:
+                audit_event("logout", user_id=session.user_id)
+                await store.delete(user_session_key(session.user_id))
+        response = RedirectResponse("/", status_code=302)
+        response.delete_cookie(ANON_COOKIE_NAME, path="/", httponly=True, samesite="lax")
+        return response
 
     bearer_token = _get_session_id(request, settings)
     if bearer_token:

@@ -1,6 +1,6 @@
 # deriva-mcp-ui Workplan and Design
 
-**Status:** Phases 0-8 complete (Phase 9 design only)
+**Status:** Phases 0-8 complete + post-Phase-8 anonymous mode hardening (Phase 9 design only)
 
 **Target repo:** `deriva-mcp-ui`
 
@@ -884,6 +884,47 @@ metadata in a separate `chatbot_conversations` table rather than as a JSON blob
 in the key-value store, to allow efficient listing and deletion without
 deserializing all history. This is a backend-specific optimization and does not
 affect the API or UI.
+
+---
+
+### Post-Phase-8 Hardening
+
+**Anonymous / zero-auth mode [DONE -- 2026-04-02]**
+
+Added support for deployments where Credenza is not configured. When
+`DERIVA_CHATBOT_CREDENZA_URL` is not set, the UI operates in anonymous mode:
+no login is required and sessions are browser-scoped using a random cookie.
+
+#### Key design decisions
+
+- **Auto-detection, no explicit mode flag.** `Settings.auth_enabled` is a
+  computed property: `bool(self.credenza_url)`. If `credenza_url` is set,
+  full OAuth is required. If not, anonymous mode is active. This mirrors
+  the `DERIVA_MCP_ALLOW_ANONYMOUS` pattern in `deriva-mcp-core`.
+
+- **Per-browser anonymous sessions.** Each browser gets an opaque random ID
+  (`deriva_chatbot_anon` cookie). The session key is `uid:anonymous/{anon_id}`.
+  Sessions persist for `session_ttl` seconds (same as authenticated sessions).
+  A new session is created on first request; subsequent requests read the
+  existing one.
+
+- **No bearer token.** `Session.bearer_token` is `str | None = None`.
+  `mcp_client.py` omits the `Authorization` header entirely when the token
+  is None.
+
+- **Validated config paths.**
+    - `auth_enabled=True`: all Credenza fields required at startup (unchanged).
+    - `auth_enabled=False`: only `mcp_url` and `anthropic_api_key` required;
+      Credenza fields not validated.
+
+#### Cookie delivery -- middleware workaround
+
+FastAPI does not merge cookies set on an injected `Response` dependency into
+the actual HTTP response when the endpoint returns `JSONResponse` directly.
+The workaround: `_get_or_create_anonymous_session()` stores the new cookie
+info in `request.state.new_anon_id = (anon_id, max_age)`, and
+`_anon_cookie_middleware` (registered as `@app.middleware("http")`) reads
+it and attaches the `Set-Cookie` header to the outgoing response.
 
 ---
 

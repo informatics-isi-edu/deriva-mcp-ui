@@ -12,7 +12,7 @@ class Session:
     """Server-side session state for one authenticated user."""
 
     user_id: str
-    bearer_token: str
+    bearer_token: str | None = None
     # Full Credenza /session response dict -- source of truth for display name,
     # email, groups, and any other identity fields the UI may need.
     credenza_session: dict[str, Any] = field(default_factory=dict)

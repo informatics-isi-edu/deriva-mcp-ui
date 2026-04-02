@@ -441,6 +441,106 @@ async def test_callback_no_access_token_in_response(app_and_store):
     assert "access_token" in resp.text
 
 
+# ---------------------------------------------------------------------------
+# Anonymous mode
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def anon_app_and_store():
+    # No credenza_url -> anonymous mode (auth_enabled=False)
+    settings = Settings(
+        mcp_url="http://mcp:8000",
+        anthropic_api_key="sk-ant-test",
+    )
+    app = create_app(settings)
+    store = MemorySessionStore(ttl=settings.session_ttl)
+    app.state.store = store
+    return app, store
+
+
+def test_login_anonymous_mode_redirects_to_root(anon_app_and_store):
+    """/login in anonymous mode redirects to / without starting OAuth."""
+    app, _ = anon_app_and_store
+    client = TestClient(app, follow_redirects=False)
+    resp = client.get("/login")
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "/"
+    # No PKCE cookie set
+    assert "deriva_chatbot_pkce" not in resp.cookies
+
+
+@pytest.mark.asyncio
+async def test_anonymous_session_created_on_first_request(anon_app_and_store):
+    """First request without a cookie creates a new anonymous session."""
+    app, store = anon_app_and_store
+    client = TestClient(app, follow_redirects=False)
+    resp = client.get("/session-info")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["display_name"] == "Anonymous"
+    assert data["user_id"].startswith("anonymous/")
+    # Cookie was set
+    assert "deriva_chatbot_anon" in resp.cookies
+
+
+@pytest.mark.asyncio
+async def test_anonymous_session_persists_across_requests(anon_app_and_store):
+    """Second request with the anon cookie reuses the existing session."""
+    app, store = anon_app_and_store
+    client = TestClient(app, follow_redirects=False)
+
+    # First request -- creates session
+    resp1 = client.get("/session-info")
+    assert resp1.status_code == 200
+    anon_id = resp1.cookies["deriva_chatbot_anon"]
+    user_id_1 = resp1.json()["user_id"]
+
+    # Second request with the cookie -- same session
+    resp2 = client.get("/session-info", cookies={"deriva_chatbot_anon": anon_id})
+    assert resp2.status_code == 200
+    assert resp2.json()["user_id"] == user_id_1
+
+
+@pytest.mark.asyncio
+async def test_anonymous_logout_clears_cookie(anon_app_and_store):
+    """Logout in anonymous mode deletes the anon session and clears the cookie."""
+    app, store = anon_app_and_store
+    client = TestClient(app, follow_redirects=False)
+
+    # Create a session
+    resp1 = client.get("/session-info")
+    anon_id = resp1.cookies["deriva_chatbot_anon"]
+    user_id = resp1.json()["user_id"]
+
+    # Logout
+    resp2 = client.get("/logout", cookies={"deriva_chatbot_anon": anon_id})
+    assert resp2.status_code == 302
+    # Session removed from store
+    from deriva_mcp_ui.auth import user_session_key
+    assert await store.get(user_session_key(user_id)) is None
+
+
+def test_config_no_credenza_url_skips_credenza_validation():
+    """No credenza_url: validate_for_http() does not require Credenza fields."""
+    s = Settings(
+        mcp_url="http://mcp:8000",
+        anthropic_api_key="sk-ant-test",
+    )
+    s.validate_for_http()  # must not raise
+
+
+def test_config_with_credenza_url_requires_full_config():
+    """credenza_url set: validate_for_http() raises when other Credenza fields are missing."""
+    s = Settings(
+        mcp_url="http://mcp:8000",
+        anthropic_api_key="sk-ant-test",
+        credenza_url="https://credenza.example.org",
+    )
+    with pytest.raises(ValueError, match="DERIVA_CHATBOT_CLIENT_ID"):
+        s.validate_for_http()
+
+
 @pytest.mark.asyncio
 async def test_logout_revocation_failure_is_nonfatal(app_and_store):
     """Token revocation HTTP error is logged but logout still completes (lines 292-293)."""
