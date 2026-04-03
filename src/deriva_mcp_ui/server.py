@@ -32,21 +32,22 @@ from .storage import Session, create_store
 logger = logging.getLogger(__name__)
 
 
-def _init_logging(debug: bool = False) -> None:  # pragma: no cover
+def _init_logging(debug: bool = False, app_use_syslog: bool = False) -> None:  # pragma: no cover
     """Configure the root deriva_mcp_ui logger.
 
-    Always adds a stderr stream handler so logs appear in docker logs.
-    Also adds a syslog handler when /dev/log is available, for production
-    deployments that forward syslog to a central collector.
+    Always adds a stderr StreamHandler (for ``docker logs`` and local dev).
+    Optionally adds a SysLogHandler on LOCAL1 when *app_use_syslog* is True,
+    for non-Docker deployments where syslog is the only path to a centralized
+    collector.  In Docker, ``driver: syslog`` in compose already forwards
+    stderr, so enabling this would duplicate every app log line.
+
+    Audit and access logs have their own SysLogHandlers (LOCAL1/LOCAL2)
+    controlled by separate config flags.
     """
     import os
-    from logging.handlers import SysLogHandler
 
     fmt_stream = logging.Formatter(
         "%(asctime)s [%(process)d] [%(levelname)s] [%(name)s] - %(message)s"
-    )
-    fmt_syslog = logging.Formatter(
-        "[%(process)d] [%(levelname)s] [%(name)s] - %(message)s"
     )
 
     root = logging.getLogger("deriva_mcp_ui")
@@ -54,15 +55,20 @@ def _init_logging(debug: bool = False) -> None:  # pragma: no cover
     stream_handler.setFormatter(fmt_stream)
     root.addHandler(stream_handler)
 
-    syslog_socket = "/dev/log"
-    if os.path.exists(syslog_socket) and os.access(syslog_socket, os.W_OK):
-        try:
-            sh = SysLogHandler(address=syslog_socket, facility=SysLogHandler.LOG_LOCAL1)
-            sh.ident = "deriva-mcp-ui: "
-            sh.setFormatter(fmt_syslog)
-            root.addHandler(sh)
-        except Exception:
-            pass
+    if app_use_syslog:
+        syslog_socket = "/dev/log"
+        if os.path.exists(syslog_socket) and os.access(syslog_socket, os.W_OK):
+            from logging.handlers import SysLogHandler
+
+            try:
+                sh = SysLogHandler(address=syslog_socket, facility=SysLogHandler.LOG_LOCAL1)
+                sh.ident = "deriva-mcp-ui: "
+                sh.setFormatter(logging.Formatter(
+                    "[%(process)d] [%(levelname)s] [%(name)s] - %(message)s"
+                ))
+                root.addHandler(sh)
+            except Exception:
+                pass
 
     root.setLevel(logging.DEBUG if debug else logging.INFO)
     root.propagate = False
@@ -70,6 +76,46 @@ def _init_logging(debug: bool = False) -> None:  # pragma: no cover
     # Suppress per-request noise from httpx/httpcore
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+    # Detach uvicorn.access from the main log stream.  Handlers are added
+    # later by _init_access_logging() once settings are available.
+    access_log = logging.getLogger("uvicorn.access")
+    access_log.handlers = []
+    access_log.propagate = False
+    access_log.setLevel(logging.INFO)
+
+
+def _init_access_logging(settings: Settings) -> None:  # pragma: no cover
+    """Route uvicorn access logs to a dedicated file and/or syslog facility.
+
+    Uses LOG_LOCAL2 for syslog so rsyslog can route access logs separately
+    from the application log (LOG_LOCAL1).
+    """
+    import os
+    from logging.handlers import RotatingFileHandler, SysLogHandler
+
+    fmt = logging.Formatter("%(asctime)s %(message)s")
+    access_log = logging.getLogger("uvicorn.access")
+
+    if settings.access_logfile_path:
+        fh = RotatingFileHandler(
+            settings.access_logfile_path, maxBytes=50_000_000, backupCount=5
+        )
+        fh.setFormatter(fmt)
+        access_log.addHandler(fh)
+
+    if settings.access_use_syslog:
+        syslog_socket = "/dev/log"
+        if os.path.exists(syslog_socket) and os.access(syslog_socket, os.W_OK):
+            try:
+                sh = SysLogHandler(
+                    address=syslog_socket, facility=SysLogHandler.LOG_LOCAL2
+                )
+                sh.ident = "deriva-mcp-ui-access: "
+                sh.setFormatter(logging.Formatter("%(message)s"))
+                access_log.addHandler(sh)
+            except Exception:
+                pass
 
 
 class ChatRequest(BaseModel):
@@ -314,7 +360,8 @@ def main() -> None:  # pragma: no cover
     settings = Settings()
     settings.validate_for_http()
 
-    _init_logging(debug=settings.debug)
+    _init_logging(debug=settings.debug, app_use_syslog=settings.app_use_syslog)
+    _init_access_logging(settings)
 
     init_audit_logger(use_syslog=True)
     app = create_app(settings)
@@ -323,4 +370,5 @@ def main() -> None:  # pragma: no cover
         host="0.0.0.0",
         port=8001,
         log_level="debug" if settings.debug else "info",
+        access_log=False,
     )

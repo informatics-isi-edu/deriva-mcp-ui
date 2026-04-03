@@ -52,6 +52,15 @@ class Settings(BaseSettings):
     storage_backend_url: str = ""
     debug: bool = False
 
+    # App syslog: enable for non-Docker deployments where syslog is the
+    # only path to a centralized collector.  Leave False under Docker
+    # (compose driver: syslog already forwards stderr).
+    app_use_syslog: bool = False
+
+    # Access logging (uvicorn request log)
+    access_logfile_path: str = "deriva-mcp-ui-access.log"
+    access_use_syslog: bool = False
+
     @property
     def auth_enabled(self) -> bool:
         """True when Credenza is configured and the OAuth login flow is active."""
