@@ -77,6 +77,13 @@ def _init_logging(debug: bool = False, app_use_syslog: bool = False) -> None:  #
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
 
+    # Route the uvicorn logger through our stream handler so startup messages
+    # appear in stderr without propagating to the root logger.
+    uv_log = logging.getLogger("uvicorn")
+    uv_log.handlers = []
+    uv_log.addHandler(stream_handler)
+    uv_log.propagate = False
+
     # Detach uvicorn.access from the main log stream.  Handlers are added
     # later by _init_access_logging() once settings are available.
     access_log = logging.getLogger("uvicorn.access")
@@ -370,5 +377,5 @@ def main() -> None:  # pragma: no cover
         host="0.0.0.0",
         port=8001,
         log_level="debug" if settings.debug else "info",
-        access_log=False,
+        log_config=None,
     )
