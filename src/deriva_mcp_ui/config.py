@@ -43,10 +43,11 @@ class Settings(BaseSettings):
     header_logo_url: str = "static/deriva-logo.png"
 
     # Tuning
-    claude_model: str = "claude-haiku-4-5-20251001"
+    claude_model: str = "claude-haiku-4-5-latest"
     max_history_turns: int = 10
     max_message_length: int = 10000
     session_ttl: int = 28800
+    history_ttl: int = 604800  # 7 days
     storage_backend: str = "memory"
     storage_backend_url: str = ""
     debug: bool = False

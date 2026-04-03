@@ -22,8 +22,8 @@ class RedisSessionStore:
             return None
         return Session.from_json(data)
 
-    async def set(self, session_id: str, session: Session) -> None:
-        await self._client.setex(f"session:{session_id}", self._ttl, session.to_json())
+    async def set(self, session_id: str, session: Session, ttl: int | None = None) -> None:
+        await self._client.setex(f"session:{session_id}", ttl or self._ttl, session.to_json())
 
     async def delete(self, session_id: str) -> None:
         await self._client.delete(f"session:{session_id}")

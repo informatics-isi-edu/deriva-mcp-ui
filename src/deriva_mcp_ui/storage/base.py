@@ -23,8 +23,12 @@ class Session:
     # General-purpose mode: user-supplied catalog context
     gp_hostname: str = ""
     gp_catalog_id: str = ""
-    # Schema priming: True once rag_search / get_schema has been run for this conversation
+    # Schema priming: True once priming has been run for this conversation
     schema_primed: bool = False
+    # Cached priming context -- injected into the system prompt on every turn
+    primed_schema: str = ""
+    primed_guides: str = ""
+    primed_ermrest: str = ""
 
     def to_json(self) -> str:
         return json.dumps(
@@ -39,6 +43,9 @@ class Session:
                 "gp_hostname": self.gp_hostname,
                 "gp_catalog_id": self.gp_catalog_id,
                 "schema_primed": self.schema_primed,
+                "primed_schema": self.primed_schema,
+                "primed_guides": self.primed_guides,
+                "primed_ermrest": self.primed_ermrest,
             }
         )
 
@@ -56,6 +63,9 @@ class Session:
             gp_hostname=d.get("gp_hostname", ""),
             gp_catalog_id=d.get("gp_catalog_id", ""),
             schema_primed=d.get("schema_primed", False),
+            primed_schema=d.get("primed_schema", ""),
+            primed_guides=d.get("primed_guides", ""),
+            primed_ermrest=d.get("primed_ermrest", ""),
         )
 
 
@@ -66,8 +76,11 @@ class SessionStore(Protocol):
         """Return session if it exists and has not expired, else None."""
         ...  # pragma: no cover
 
-    async def set(self, session_id: str, session: Session) -> None:
-        """Persist or update a session."""
+    async def set(self, session_id: str, session: Session, ttl: int | None = None) -> None:
+        """Persist or update a session.
+
+        ttl overrides the store default when provided (seconds).
+        """
         ...  # pragma: no cover
 
     async def delete(self, session_id: str) -> None:

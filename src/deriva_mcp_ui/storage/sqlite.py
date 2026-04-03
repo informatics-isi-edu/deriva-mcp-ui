@@ -45,8 +45,13 @@ class SQLiteSessionStore:
             import aiosqlite  # noqa: F401
         except ImportError as exc:
             raise ImportError("sqlite extra required: pip install 'deriva-mcp-ui[sqlite]'") from exc
-        # Strip sqlite:/// scheme prefix if present
-        self._path = url.removeprefix("sqlite:///")
+        # Strip sqlite: scheme prefix if present, preserving absolute paths.
+        # Accepts sqlite:///path (relative) and sqlite:////path (absolute)
+        # as well as plain file paths.
+        if url.startswith("sqlite://"):
+            self._path = url[len("sqlite://"):]
+        else:
+            self._path = url
         self._ttl = ttl
         self._db = None
 
@@ -69,9 +74,9 @@ class SQLiteSessionStore:
             return None
         return Session.from_json(row[0])
 
-    async def set(self, session_id: str, session: Session) -> None:
+    async def set(self, session_id: str, session: Session, ttl: int | None = None) -> None:
         db = await self._init_db()
-        await db.execute(_SQL_UPSERT, (session_id, session.to_json(), time.time() + self._ttl))
+        await db.execute(_SQL_UPSERT, (session_id, session.to_json(), time.time() + (ttl or self._ttl)))
         await db.commit()
 
     async def delete(self, session_id: str) -> None:

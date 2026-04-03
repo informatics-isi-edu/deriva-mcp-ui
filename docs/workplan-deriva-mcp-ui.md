@@ -1,6 +1,7 @@
 # deriva-mcp-ui Workplan and Design
 
-**Status:** Phases 0-8 complete + post-Phase-8 anonymous mode hardening (Phase 9 design only)
+**Status:** Phases 0-8 complete + post-Phase-8 anonymous mode hardening + schema priming/guide injection (Phase 9 design
+only)
 
 **Target repo:** `deriva-mcp-ui`
 
@@ -151,9 +152,10 @@ for querying and managing this catalog. When answering questions about data, sch
 or annotations, use the available tools rather than relying on prior knowledge.
 ```
 
-- At the start of each new conversation, the UI service calls `rag_search` with a broad
-  query to prime Claude's context with schema information before the user's first message
-  is processed.
+- At the start of each new conversation, the UI service calls `get_catalog_info` and
+  `get_schema` to prime Claude's context with schema information, then injects MCP guide
+  prompts and ERMrest syntax documentation into the system prompt before the user's first
+  message is processed. Primed content is cached in the session for subsequent turns.
 
 ### General-purpose mode
 
@@ -264,14 +266,14 @@ The system prompt is not counted as history and is always prepended fresh.
 
 **Tuning:**
 
-| Variable                             | Default                     | Description                                                                                                                                                              |
-|--------------------------------------|-----------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `DERIVA_CHATBOT_CLAUDE_MODEL`        | `claude-haiku-4-5-20251001` | Claude model ID                                                                                                                                                          |
-| `DERIVA_CHATBOT_MAX_HISTORY_TURNS`   | `10`                        | Max conversation turns retained in server-side history                                                                                                                   |
-| `DERIVA_CHATBOT_SESSION_TTL`         | `28800`                     | Server-side session TTL in seconds (default 8h)                                                                                                                          |
-| `DERIVA_CHATBOT_STORAGE_BACKEND`     | `memory`                    | Session store backend: `memory`, `redis`, `valkey`, `postgresql`, `sqlite`                                                                                               |
-| `DERIVA_CHATBOT_STORAGE_BACKEND_URL` | --                          | Connection URL for the selected backend (not used for `memory`). Examples: `redis://localhost:6379/0`, `postgresql://user:pass@host/db`, `sqlite:///path/to/sessions.db` |
-| `DERIVA_CHATBOT_DEBUG`               | `false`                     | Enable debug logging and show tool calls in the UI                                                                                                                       |
+| Variable                             | Default                   | Description                                                                                                                                                              |
+|--------------------------------------|---------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `DERIVA_CHATBOT_CLAUDE_MODEL`        | `claude-haiku-4-5-latest` | Claude model ID (Haiku is sufficient after prompt engineering work; override to Sonnet if needed)                                                                        |
+| `DERIVA_CHATBOT_MAX_HISTORY_TURNS`   | `10`                      | Max conversation turns retained in server-side history                                                                                                                   |
+| `DERIVA_CHATBOT_SESSION_TTL`         | `28800`                   | Server-side session TTL in seconds (default 8h)                                                                                                                          |
+| `DERIVA_CHATBOT_STORAGE_BACKEND`     | `memory`                  | Session store backend: `memory`, `redis`, `valkey`, `postgresql`, `sqlite`                                                                                               |
+| `DERIVA_CHATBOT_STORAGE_BACKEND_URL` | --                        | Connection URL for the selected backend (not used for `memory`). Examples: `redis://localhost:6379/0`, `postgresql://user:pass@host/db`, `sqlite:///path/to/sessions.db` |
+| `DERIVA_CHATBOT_DEBUG`               | `false`                   | Enable debug logging and show tool calls in the UI                                                                                                                       |
 
 ---
 
@@ -443,8 +445,11 @@ Deliverable: `/login` and `/callback` complete the OAuth flow and set a session 
   to `input_schema`, passthrough everything else), return list
 - `call_tool(bearer_token, name, arguments) -> str` -- connect, call
   `session.call_tool(name, arguments)`, extract text content from result, return as string
-- Both functions open a fresh `streamablehttp_client` connection per call (stateless HTTP
-  model; no persistent connection to maintain)
+- Both functions open a fresh `streamablehttp_client` connection per call by default
+  (stateless HTTP model; no persistent connection to maintain)
+- `open_session(bearer_token)` async context manager provides a shared `ClientSession`
+  for batching multiple MCP calls on a single connection (used during schema priming to
+  avoid per-call `ListToolsRequest` overhead)
 - Connection errors (MCP server unreachable, 401 from MCP server) raise typed exceptions
   that the chat layer converts to user-visible error messages
 
@@ -504,17 +509,32 @@ Deliverable: functional browser UI against a running stack.
 
 ### Phase 5 -- Default Catalog Schema Priming
 
-When default-catalog mode is active, the first turn of a new conversation triggers a
-`rag_search` call against the catalog's schema before passing the user's message to
-Claude. The result is appended to the system prompt (not shown in the chat thread) so
-Claude has immediate awareness of available tables and columns.
+**Status:** Complete (reimplemented 2026-04-03).
 
-If RAG is not enabled on the MCP server (`rag_status` returns no schema entries for the
-catalog), fall back to `get_schema` on the default catalog's first schema and include
-the result in the system prompt directly. Truncate to a reasonable token budget if the
-schema is very large.
+When default-catalog mode is active, the first turn of a new conversation primes the
+system prompt with schema context, MCP guide prompts, and ERMrest syntax documentation.
 
-This priming happens once per conversation, not on every turn.
+**Schema priming** (`_prime_schema`): calls `get_catalog_info` to discover schemas, then
+`get_schema` for each schema (skipping `public` which contains ERMrest system tables).
+Results are concatenated under a 20k-character budget; the first schema is always included
+even if it exceeds the budget. The original design used `rag_search`, but testing showed
+that structured `get_schema` output provides cleaner, more complete schema context than
+RAG fragments.
+
+**Guide injection** (`_fetch_guides`): fetches `query_guide`, `entity_guide`, and
+`annotation_guide` MCP prompts and injects them into the system prompt. These provide
+behavioral directives (mandatory rules, anti-pattern prevention) that are more effective
+in the system prompt than in tool descriptions, especially with Haiku.
+
+**ERMrest syntax** (`_prime_ermrest_syntax`): fetches ERMrest URL syntax documentation via
+`rag_search` for additional query reference material.
+
+**Connection batching** (`open_session`): all priming calls share a single MCP session
+via `mcp_client.open_session()`, avoiding the per-call `ListToolsRequest` overhead.
+
+**Persistence**: primed content is stored on the session (`primed_schema`, `primed_guides`,
+`primed_ermrest`) and reused on subsequent turns without re-fetching. Cleared on
+conversation reset.
 
 Deliverable: in default-catalog mode, Claude answers schema questions correctly on the
 first turn without the user needing to say "look at the schema first."
@@ -626,13 +646,14 @@ the user is active, surviving multiple re-authentication cycles.
 
 - **Three-tier tool result truncation**:
     - `_TOOL_RESULT_PREVIEW = 1000` chars -- shown in the UI tool call block
-    - `_TOOL_RESULT_TO_CLAUDE = 6000` chars -- fed back to Claude in the current turn
+    - `_TOOL_RESULT_TO_CLAUDE = 10000` chars -- fed back to Claude in the current turn
+      (raised from 6000 after testing showed 10 study rows were being truncated)
     - `_HISTORY_TOOL_RESULT_MAX = 3000` chars -- stored in session history for subsequent turns
 
-- **Model default**: changed from `claude-sonnet-4-6` to `claude-haiku-4-5-20251001`.
-  Haiku has a 200k token/min rate limit (vs ~30k for Sonnet at the free tier) and is
-  sufficient for DERIVA data assistant workloads. Override with
-  `DERIVA_CHATBOT_CLAUDE_MODEL`.
+- **Model default**: Haiku (`claude-haiku-4-5-latest`). Haiku has a 200k token/min rate
+  limit (vs ~30k for Sonnet at the free tier) and is sufficient for DERIVA data assistant
+  workloads after prompt engineering hardening (guide injection, mandatory rules in system
+  prompt). Override with `DERIVA_CHATBOT_CLAUDE_MODEL`.
 
 - **Retry with exponential backoff**: `run_chat_turn` retries on HTTP 429 (rate limit)
   and 529 (overloaded) with delays of 5s, 10s, 20s (up to `_MAX_API_RETRIES = 3`).
@@ -654,9 +675,12 @@ the user is active, surviving multiple re-authentication cycles.
 
 - **Display rules in system prompt**: the "always show all columns including null-value
   columns; always include RID; omit RCT/RMT/RCB/RMB unless requested" display rules are
-  injected into the system prompt (not just the tool descriptions). Haiku is less reliably
-  instruction-following than Sonnet on rules buried in tool descriptions; the system prompt
-  carries more weight.
+  injected into the system prompt (not just the tool descriptions). Additionally, the
+  system prompt now includes five MANDATORY RULES at the top (schema context usage,
+  multi-table join guidance, zero-result acceptance, display rules, and operational rules)
+  that are reinforced by the MCP guide prompts injected from `tools/prompts.py` in
+  `deriva-mcp-core`. This layered approach (system prompt rules + guide prompts) works
+  reliably with both Haiku and Sonnet.
 
 - **RFC 7009 token revocation on logout**: `logout()` POSTs to `{credenza_url}/revoke`
   with `token` and `client_id` after clearing server-side session state. Best-effort --

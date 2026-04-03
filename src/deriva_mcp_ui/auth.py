@@ -68,6 +68,7 @@ _DERIVA_SERVICE_RESOURCE = "urn:deriva:rest:service:all"
 
 _TOKEN_PREFIX = "tok:"
 _USER_PREFIX = "uid:"
+_HISTORY_PREFIX = "history:"
 
 
 def _token_key(bearer_token: str) -> str:
@@ -78,6 +79,11 @@ def _token_key(bearer_token: str) -> str:
 def user_session_key(user_id: str) -> str:
     """Store key for the full persistent session (history, tools, etc.)."""
     return _USER_PREFIX + user_id
+
+
+def history_key(user_id: str) -> str:
+    """Store key for long-lived conversation history."""
+    return _HISTORY_PREFIX + user_id
 
 
 # ---------------------------------------------------------------------------
@@ -169,16 +175,24 @@ async def _get_or_create_anonymous_session(
             session.last_active = time.time()
             await store.set(user_session_key(session.user_id), session)
             return session
+        # Session expired but cookie still valid -- restore history if available
+        user_id = f"anonymous/{anon_id}"
+        hist_entry = await store.get(history_key(user_id))
+    else:
+        anon_id = urlsafe_b64encode(os.urandom(16)).rstrip(b"=").decode()
+        hist_entry = None
 
-    # New anonymous session -- generate a fresh opaque ID
-    anon_id = urlsafe_b64encode(os.urandom(16)).rstrip(b"=").decode()
+    # New anonymous session (possibly with restored history)
+    user_id = f"anonymous/{anon_id}"
     now = time.time()
     session = Session(
-        user_id=f"anonymous/{anon_id}",
+        user_id=user_id,
         bearer_token=None,
         created_at=now,
         last_active=now,
     )
+    if hist_entry is not None:
+        session.history = hist_entry.history
     await store.set(user_session_key(session.user_id), session)
     # Stash cookie info for _anon_cookie_middleware to attach to the response
     request.state.new_anon_id = (anon_id, settings.session_ttl)
@@ -305,6 +319,10 @@ async def callback(request: Request, code: str = "", state: str = "", error: str
             created_at=now,
             last_active=now,
         )
+        # Restore conversation history from long-lived history store
+        hist_entry = await store.get(history_key(user_id))
+        if hist_entry is not None:
+            session.history = hist_entry.history
 
     # Store full session keyed by user_id (persistent across re-auth)
     await store.set(user_session_key(user_id), session)

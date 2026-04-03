@@ -31,9 +31,9 @@ class MemorySessionStore:
                 return None
             return session
 
-    async def set(self, session_id: str, session: Session) -> None:
+    async def set(self, session_id: str, session: Session, ttl: int | None = None) -> None:
         async with self._lock:
-            self._sessions[session_id] = (session, time.monotonic() + self._ttl)
+            self._sessions[session_id] = (session, time.monotonic() + (ttl or self._ttl))
 
     async def delete(self, session_id: str) -> None:
         async with self._lock:

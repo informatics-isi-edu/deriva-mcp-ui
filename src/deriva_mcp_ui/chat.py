@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING, Any
 
 import anthropic
 
-from .mcp_client import MCPAuthError, call_tool, list_tools
+from .mcp_client import MCPAuthError, call_tool, get_prompt, list_tools, open_session
 
 if TYPE_CHECKING:
     from .config import Settings
@@ -41,16 +41,22 @@ logger = logging.getLogger(__name__)
 # Maximum tokens to request from Claude per streaming call
 _MAX_TOKENS = 8192
 
-# Schema priming: truncate injected context to this many characters (~1k tokens)
-_SCHEMA_PRIMING_MAX_CHARS = 4000
+# Schema priming: truncate injected context to this many characters.
+# Each schema with ~7 tables is roughly 2-5k chars in JSON; 20k allows most catalogs.
+_SCHEMA_PRIMING_MAX_CHARS = 20000
+
+# Schemas to skip during priming -- system/internal tables that aren't useful
+# for user queries.
+_SKIP_SCHEMAS = {"public"}
 
 # Tool result sent to the client for display in the tool call block
 _TOOL_RESULT_PREVIEW = 1000
 
 # Tool result fed back to Claude in the current turn.  Keeping this bounded prevents
 # large schema/entity responses from blowing the input token budget when combined with
-# the (fixed) tool-list cost from the MCP server.
-_TOOL_RESULT_TO_CLAUDE = 6000
+# the (fixed) tool-list cost from the MCP server.  10k chars handles ~10-15 typical
+# entity rows with full text columns without truncation.
+_TOOL_RESULT_TO_CLAUDE = 10000
 
 # Tool result truncation in stored history -- older turns only need a summary.
 _HISTORY_TOOL_RESULT_MAX = 3000
@@ -72,11 +78,21 @@ _POLL_DELAY_SECONDS = 5.0
 # ---------------------------------------------------------------------------
 
 
-def system_prompt(settings: Settings, session: Session, schema_context: str = "") -> str:  # noqa: ARG002
+def system_prompt(
+    settings: Settings,
+    session: Session,
+    schema_context: str = "",
+    guide_context: str = "",
+    ermrest_syntax: str = "",
+) -> str:  # noqa: ARG002
     """Return the system prompt for this session.
 
     schema_context is injected by _prime_schema on the first turn of a
     default-catalog conversation; empty string means no priming yet.
+    guide_context is the concatenated tool guide prompts, injected on the
+    first turn so the LLM has behavioral guidance from the start.
+    ermrest_syntax is ERMrest URL reference documentation from RAG, injected
+    on the first turn so the LLM constructs correct query URLs.
     """
     if settings.default_catalog_mode:
         label = settings.default_catalog_label or settings.default_hostname
@@ -94,21 +110,175 @@ def system_prompt(settings: Settings, session: Session, schema_context: str = ""
             "hostname and catalog ID if they have not been provided."
         )
 
-    base += (
-        " When offering the user a list of options or next steps, always use a "
-        "numbered list so the user can reply with a number to select an option."
-        " When polling for background task status, wait at least 5 seconds between"
-        " each status check."
-        " When displaying query results: always include the RID column; omit the"
-        " ERMrest system columns RCT, RMT, RCB, RMB unless the user explicitly asks"
-        " for them; show ALL other columns including those whose values are entirely"
-        " null -- never hide or drop a column just because its values are null."
-    )
+    # Build mandatory rules -- rule 1 depends on whether schema was injected.
+    rules = [
+        "\n\nMANDATORY RULES -- violations of these rules waste tool calls and user time:\n"
+    ]
 
     if schema_context:
-        return base + "\n\n---\nAvailable schema information:\n" + schema_context
+        rules.append(
+            "1. SCHEMA IS ALREADY LOADED. The catalog schema (tables, columns, foreign "
+            "keys) is provided below in this system prompt. Do NOT call get_schema, "
+            "get_table, get_table_columns, or list_schemas to explore -- that information "
+            "is already here. Read it and use it directly."
+        )
+    else:
+        rules.append(
+            "1. SCHEMA LOOKUP. Call get_schema ONCE to learn the catalog structure, "
+            "then use that information for all subsequent queries. Do NOT call "
+            "get_schema, get_table, or get_table_columns repeatedly."
+        )
+
+    rules.append(
+        "2. USE query_attribute FOR MULTI-TABLE QUERIES. When the user asks for data "
+        "that spans related tables, construct a single query_attribute call with a "
+        "join path (e.g. Schema:TableA/FK_Column=value/Schema:TableB). Do NOT call "
+        "get_entities on individual tables and try to correlate results."
+    )
+    rules.append(
+        "3. ZERO RESULTS IS A COMPLETE ANSWER. If a query returns 0 rows and there "
+        "was no HTTP error, report that to the user and stop. Do NOT reformulate "
+        "the query, do NOT investigate intermediate tables, do NOT try different "
+        "join paths. Zero rows means the data does not exist."
+    )
+    rules.append(
+        "4. DISPLAY ALL COLUMNS WITH FULL VALUES. Always show the RID column. Omit "
+        "only the system columns RCT, RMT, RCB, RMB. Show every other column even "
+        "if all values are null -- never hide a column. Never truncate, abbreviate, "
+        "or shorten any cell value -- display full text verbatim even if it makes "
+        "the table wide."
+    )
+    rules.append(
+        "5. When offering options, use a numbered list. When polling background tasks, "
+        "wait at least 5 seconds between checks."
+    )
+    base += "\n".join(rules)
+
+    if schema_context:
+        base += (
+            "\n\n---\nAvailable schema information (USE THIS -- do not call"
+            " get_schema or get_table to re-fetch what is already here):\n"
+            + schema_context
+        )
+
+    if guide_context:
+        base += "\n\n---\nTool usage guides:\n" + guide_context
+
+    if ermrest_syntax:
+        base += "\n\n---\nERMrest URL syntax reference:\n" + ermrest_syntax
 
     return base
+
+
+# ---------------------------------------------------------------------------
+# Guide prompt fetching
+# ---------------------------------------------------------------------------
+
+# Names of guide prompts to fetch from the MCP server and inject into the
+# system prompt on the first turn.
+_GUIDE_PROMPT_NAMES = [
+    "query_guide",
+    "entity_guide",
+    "annotation_guide",
+    "catalog_guide",
+]
+
+
+async def _fetch_guides(session: Session, settings: Settings, *, mcp_session=None) -> str:
+    """Fetch all guide prompts from the MCP server and return them joined.
+
+    Fetches all guides sequentially on a shared MCP session to avoid
+    opening a new connection per prompt. Returns an empty string if none
+    succeed.
+    """
+    mcp_url = settings.mcp_url
+    token = session.bearer_token
+
+    parts: list[str] = []
+    for name in _GUIDE_PROMPT_NAMES:
+        result = await get_prompt(token, name, mcp_url, session=mcp_session)
+        if result:
+            parts.append(result)
+        else:
+            logger.debug("Guide prompt %s unavailable", name)
+
+    if parts:
+        logger.info("Fetched %d guide prompts (%d chars)", len(parts), sum(len(p) for p in parts))
+    else:
+        logger.warning("No guide prompts fetched from MCP server")
+    return "\n\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# ERMrest syntax priming
+# ---------------------------------------------------------------------------
+
+# RAG queries to fetch ERMrest URL syntax documentation. Each query targets
+# a different aspect of the API so the vector search returns complementary
+# chunks rather than duplicates.
+_ERMREST_SYNTAX_QUERIES = [
+    "ERMrest URL path syntax attribute query filter operators",
+    "ERMrest path entity filter predicate join foreign key",
+]
+
+# Budget for ERMrest syntax context injected into the system prompt.
+_ERMREST_SYNTAX_MAX_CHARS = 6000
+
+
+async def _prime_ermrest_syntax(session: Session, settings: Settings, *, mcp_session=None) -> str:
+    """Fetch ERMrest URL syntax documentation from RAG and return it for injection.
+
+    Runs RAG searches sequentially on a shared MCP session to avoid opening
+    a new connection per query. Deduplicates by source and returns the
+    concatenated text. Returns an empty string if RAG is unavailable or has
+    no relevant docs indexed.
+    """
+    mcp_url = settings.mcp_url
+    token = session.bearer_token
+
+    results: list[str | Exception] = []
+    for q in _ERMREST_SYNTAX_QUERIES:
+        try:
+            r = await call_tool(token, "rag_search", {"query": q, "limit": 5}, mcp_url, session=mcp_session)
+            results.append(r)
+        except Exception as exc:
+            results.append(exc)
+
+    import json as _json
+    seen_sources: set[str] = set()
+    chunks: list[str] = []
+    total_chars = 0
+
+    for i, result in enumerate(results):
+        if isinstance(result, Exception):
+            logger.warning("ERMrest syntax RAG query %d failed: %s", i, result)
+            continue
+        if not isinstance(result, str):
+            logger.warning("ERMrest syntax RAG query %d returned non-string: %s", i, type(result))
+            continue
+        if result.startswith("Error:"):
+            logger.warning("ERMrest syntax RAG query %d returned error: %s", i, result[:200])
+            continue
+        try:
+            entries = _json.loads(result)
+        except Exception:
+            continue
+        for entry in entries:
+            source = entry.get("source", "")
+            text = entry.get("text", "")
+            if not text or source in seen_sources:
+                continue
+            seen_sources.add(source)
+            if total_chars + len(text) > _ERMREST_SYNTAX_MAX_CHARS:
+                break
+            chunks.append(text)
+            total_chars += len(text)
+
+    if chunks:
+        logger.info("ERMrest syntax priming: %d chunks, %d chars", len(chunks), total_chars)
+    else:
+        logger.warning("ERMrest syntax priming: no docs found in RAG")
+    return "\n\n".join(chunks)
 
 
 # ---------------------------------------------------------------------------
@@ -116,45 +286,70 @@ def system_prompt(settings: Settings, session: Session, schema_context: str = ""
 # ---------------------------------------------------------------------------
 
 
-async def _prime_schema(session: Session, settings: Settings) -> str:
+async def _prime_schema(session: Session, settings: Settings, *, mcp_session=None) -> str:
     """Return schema context for the default catalog to inject into the system prompt.
 
-    Tries rag_search first (semantic, concise).  Falls back to get_schema if
-    rag_search fails or returns an error result.  Truncates to
-    _SCHEMA_PRIMING_MAX_CHARS to stay within a reasonable token budget.
+    Calls get_catalog_info to discover schemas, then get_schema for each to get
+    tables and columns. Returns a clean, structured JSON listing that the LLM
+    can immediately use for constructing queries.
     """
+    import json as _json
+
     hostname = settings.default_hostname
     catalog_id = settings.default_catalog_id
     mcp_url = settings.mcp_url
     token = session.bearer_token
 
-    # Attempt 1: rag_search
+    # Step 1: get schema names
     try:
-        text = await call_tool(
+        info_text = await call_tool(
             token,
-            "rag_search",
-            {"query": "tables columns schema", "hostname": hostname, "catalog_id": catalog_id},
-            mcp_url,
-        )
-        if text and not text.startswith("Error:"):
-            logger.debug("Schema priming via rag_search: %d chars", len(text))
-            return text[:_SCHEMA_PRIMING_MAX_CHARS]
-    except Exception as exc:
-        logger.debug("rag_search unavailable for priming: %s", exc)
-
-    # Attempt 2: get_schema
-    try:
-        text = await call_tool(
-            token,
-            "get_schema",
+            "get_catalog_info",
             {"hostname": hostname, "catalog_id": catalog_id},
             mcp_url,
+            session=mcp_session,
         )
-        if text and not text.startswith("Error:"):
-            logger.debug("Schema priming via get_schema: %d chars", len(text))
-            return text[:_SCHEMA_PRIMING_MAX_CHARS]
+        if not info_text or info_text.startswith("Error:"):
+            logger.warning("Schema priming: get_catalog_info failed: %s", info_text[:200] if info_text else "empty")
+            return ""
+        info = _json.loads(info_text)
+        schema_names = [
+            s["schema"] for s in info.get("schemas", [])
+            if s["schema"] not in _SKIP_SCHEMAS
+        ]
     except Exception as exc:
-        logger.debug("get_schema unavailable for priming: %s", exc)
+        logger.warning("Schema priming: get_catalog_info failed: %s", exc)
+        return ""
+
+    if not schema_names:
+        logger.warning("Schema priming: no schemas found in catalog %s/%s", hostname, catalog_id)
+        return ""
+
+    # Step 2: get full schema details for each
+    parts: list[str] = []
+    total_chars = 0
+    for schema_name in schema_names:
+        try:
+            schema_text = await call_tool(
+                token,
+                "get_schema",
+                {"hostname": hostname, "catalog_id": catalog_id, "schema": schema_name},
+                mcp_url,
+                session=mcp_session,
+            )
+            if schema_text and not schema_text.startswith("Error:"):
+                if parts and total_chars + len(schema_text) > _SCHEMA_PRIMING_MAX_CHARS:
+                    logger.debug("Schema priming: budget exceeded at schema %s (%d chars so far)", schema_name, total_chars)
+                    break
+                parts.append(schema_text)
+                total_chars += len(schema_text)
+        except Exception as exc:
+            logger.debug("Schema priming: get_schema(%s) failed: %s", schema_name, exc)
+
+    if parts:
+        result = "\n".join(parts)
+        logger.debug("Schema priming: %d schemas, %d chars", len(parts), len(result))
+        return result
 
     logger.warning(
         "Schema priming failed for %s/%s -- proceeding without context", hostname, catalog_id
@@ -209,9 +404,10 @@ async def run_chat_turn(
     """Run one chat turn and yield event dicts as Claude produces output.
 
     Yields:
-      {"type": "text",       "content": str}          -- streamed text chunk
-      {"type": "tool_start", "name": str, "input": dict}  -- before each tool call
-      {"type": "tool_end",   "name": str, "result": str}  -- after each tool call
+      {"type": "status",     "message": str}               -- priming status update
+      {"type": "text",       "content": str}               -- streamed text chunk
+      {"type": "tool_start", "name": str, "input": dict}   -- before each tool call
+      {"type": "tool_end",   "name": str, "result": str}   -- after each tool call
 
     Mutates session.history (appends the completed turn), session.tools
     (caches on first call), and session.schema_primed (set after first-turn
@@ -222,19 +418,44 @@ async def run_chat_turn(
     """
     mcp_url = settings.mcp_url
 
-    # Cache tool list on first turn
-    if session.tools is None:
-        session.tools = await list_tools(session.bearer_token, mcp_url)
-        logger.debug("Cached %d tools for session %s", len(session.tools), session.user_id)
+    # First turn: open a single MCP session and batch all priming calls
+    # (list_tools, guide prompts, schema, ERMrest syntax) on it to avoid
+    # the per-call connection overhead (each connection does a full MCP
+    # initialize handshake including ListToolsRequest).
+    needs_tools = session.tools is None
+    needs_priming = not session.schema_primed
 
-    # Schema priming: inject catalog schema on the first turn of a default-catalog session
-    schema_context = ""
-    if settings.default_catalog_mode and not session.schema_primed:
-        schema_context = await _prime_schema(session, settings)
-        session.schema_primed = True
+    if needs_tools or needs_priming:
+        yield {"type": "status", "message": "Connecting to server..."}
+        async with open_session(session.bearer_token, mcp_url) as mcp_sess:
+            if needs_tools:
+                session.tools = await list_tools(session.bearer_token, mcp_url, session=mcp_sess)
+                logger.debug("Cached %d tools for session %s", len(session.tools), session.user_id)
+
+            if needs_priming:
+                if settings.default_catalog_mode:
+                    yield {"type": "status", "message": "Loading catalog schema..."}
+                    session.primed_schema = await _prime_schema(session, settings, mcp_session=mcp_sess)
+                yield {"type": "status", "message": "Loading tool guides..."}
+                session.primed_guides = await _fetch_guides(session, settings, mcp_session=mcp_sess)
+                session.primed_ermrest = await _prime_ermrest_syntax(session, settings, mcp_session=mcp_sess)
+                session.schema_primed = True
+
+    # Use cached priming context on every turn (persisted in session)
+    schema_context = session.primed_schema
+    guide_context = session.primed_guides
+    ermrest_syntax = session.primed_ermrest
+
+    if needs_priming:
+        logger.info(
+            "Priming complete: schema=%d chars, guides=%d chars, ermrest=%d chars",
+            len(schema_context), len(guide_context), len(ermrest_syntax),
+        )
+        if not schema_context:
+            logger.warning("Schema context is EMPTY -- LLM will not have schema in system prompt")
 
     client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
-    prompt = system_prompt(settings, session, schema_context)
+    prompt = system_prompt(settings, session, schema_context, guide_context, ermrest_syntax)
 
     # Prompt caching: mark the system prompt and the tail of the tool list as
     # cacheable so that repeated calls within the 5-minute cache TTL reuse the
@@ -339,9 +560,9 @@ async def run_chat_turn(
         messages.append({"role": "assistant", "content": _content_to_dicts(response.content)})
         messages.append({"role": "user", "content": tool_results})
 
-    session.history = trim_history(
-        _truncate_history_tool_results(messages), settings.max_history_turns
-    )
+    full_history = _truncate_history_tool_results(messages)
+    session.full_history = full_history
+    session.history = trim_history(full_history, settings.max_history_turns)
 
 
 # ---------------------------------------------------------------------------

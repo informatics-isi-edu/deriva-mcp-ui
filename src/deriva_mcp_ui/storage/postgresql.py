@@ -69,8 +69,8 @@ class PostgreSQLSessionStore:
             return None
         return Session.from_json(row["data"])
 
-    async def set(self, session_id: str, session: Session) -> None:
-        expires_at = datetime.now(UTC) + timedelta(seconds=self._ttl)
+    async def set(self, session_id: str, session: Session, ttl: int | None = None) -> None:
+        expires_at = datetime.now(UTC) + timedelta(seconds=ttl or self._ttl)
         pool = await self._get_pool()
         async with pool.acquire() as conn:
             await conn.execute(_SQL_UPSERT, session_id, session.to_json(), expires_at)

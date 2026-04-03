@@ -21,9 +21,10 @@
   const catalogBar   = document.getElementById("catalog-bar");
   const gpHostname   = document.getElementById("gp-hostname");
   const gpCatalogId  = document.getElementById("gp-catalog-id");
-  const catalogTitle = document.getElementById("catalog-title");
-  const userLabel    = document.getElementById("user-label");
-  const logoutLink   = document.getElementById("logout-link");
+  const catalogTitle    = document.getElementById("catalog-title");
+  const clearHistoryBtn = document.getElementById("clear-history-btn");
+  const userLabel       = document.getElementById("user-label");
+  const logoutLink      = document.getElementById("logout-link");
 
   const LOADING_DOTS_HTML =
     '<span class="loading-dots"><span></span><span></span><span></span></span>';
@@ -72,6 +73,67 @@
 
     if (info.catalog_mode === "general") {
       catalogBar.style.display = "flex";
+    }
+
+    // Load conversation history from previous sessions
+    await loadHistory();
+    clearHistoryBtn.style.display = "";
+  }
+
+  async function loadHistory() {
+    try {
+      var resp = await fetch("history");
+      if (!resp.ok) return;
+      var data = await resp.json();
+      var messages = data.messages || [];
+      if (messages.length === 0) return;
+
+      for (var i = 0; i < messages.length; i++) {
+        var msg = messages[i];
+        if (msg.role === "user") {
+          appendUserMessage(msg.content);
+        } else if (msg.role === "assistant") {
+          var el = document.createElement("div");
+          el.className = "msg msg-assistant";
+          var textEl = document.createElement("div");
+          textEl.className = "msg-text";
+          if (typeof marked !== "undefined") {
+            textEl.innerHTML = marked.parse(msg.content, { breaks: true, gfm: true });
+          } else {
+            textEl.textContent = msg.content;
+          }
+          el.appendChild(textEl);
+          thread.appendChild(el);
+        } else if (msg.role === "tool_use") {
+          var toolEl = document.createElement("div");
+          toolEl.className = "msg msg-assistant";
+          var summary = document.createElement("details");
+          summary.className = "msg-tools-container";
+          var summaryLabel = document.createElement("summary");
+          summaryLabel.className = "msg-tools-container-summary";
+          var names = msg.tools || [];
+          summaryLabel.textContent = names.length + " tool call" + (names.length !== 1 ? "s" : "");
+          summary.appendChild(summaryLabel);
+          var toolList = document.createElement("div");
+          toolList.className = "msg-tools";
+          for (var j = 0; j < names.length; j++) {
+            var callEl = document.createElement("details");
+            callEl.className = "tool-call";
+            var callSummary = document.createElement("summary");
+            callSummary.className = "tool-call-summary";
+            callSummary.innerHTML = "<code>" + escapeHtml(names[j]) + "</code>" +
+              '<span class="tool-call-status">done</span>';
+            callEl.appendChild(callSummary);
+            toolList.appendChild(callEl);
+          }
+          summary.appendChild(toolList);
+          toolEl.appendChild(summary);
+          thread.appendChild(toolEl);
+        }
+      }
+      scrollToBottom();
+    } catch (e) {
+      // History loading is best-effort -- do not block the UI
     }
   }
 
@@ -146,6 +208,14 @@
 
           if (eventName === "done") { streamDone = true; break; }
 
+          if (eventName === "status") {
+            const statusData = safeParseJSON(dataLine);
+            if (statusData && statusData.message) {
+              updateStatus(assistantEl, statusData.message);
+            }
+            continue;
+          }
+
           if (eventName === "error") {
             const payload = safeParseJSON(dataLine) || {};
             // Keep any partial content already rendered; only remove if nothing to show
@@ -163,6 +233,7 @@
           }
 
           if (eventName === "tool") {
+            clearStatus(assistantEl);
             const toolData = safeParseJSON(dataLine);
             handleToolEvent(assistantEl, toolData);
             if (toolData && toolData.type === "tool_end") needsSeparator = true;
@@ -172,6 +243,7 @@
           // Default: text chunk
           const chunk = safeParseJSON(dataLine);
           if (typeof chunk === "string") {
+            clearStatus(assistantEl);
             if (needsSeparator && accumulated) {
               // Paragraph break after a complete sentence; space after a mid-sentence split
               accumulated += /[.!?:]\s*$/.test(accumulated) ? "\n\n" : " ";
@@ -338,6 +410,28 @@
     scrollToBottom();
   }
 
+  function updateStatus(msgEl, message) {
+    var statusEl = msgEl.querySelector(".msg-status");
+    if (!statusEl) {
+      statusEl = document.createElement("div");
+      statusEl.className = "msg-status";
+      // Insert before the thinking indicator
+      var thinkingEl = msgEl.querySelector(".msg-thinking");
+      if (thinkingEl) {
+        msgEl.insertBefore(statusEl, thinkingEl);
+      } else {
+        msgEl.appendChild(statusEl);
+      }
+    }
+    statusEl.textContent = message;
+    scrollToBottom();
+  }
+
+  function clearStatus(msgEl) {
+    var statusEl = msgEl.querySelector(".msg-status");
+    if (statusEl) statusEl.remove();
+  }
+
   function renderPartial(msgEl, text) {
     const textEl = msgEl.querySelector(".msg-text");
     if (!textEl) return;
@@ -394,6 +488,18 @@
   // ------------------------------------------------------------------
 
   sendBtn.addEventListener("click", sendMessage);
+
+  clearHistoryBtn.addEventListener("click", async function () {
+    if (!confirm("Clear conversation history?")) return;
+    try {
+      var resp = await fetch("history", { method: "DELETE" });
+      if (resp.ok) {
+        thread.innerHTML = "";
+      }
+    } catch (e) {
+      // best-effort
+    }
+  });
 
   input.addEventListener("keydown", function (e) {
     if (e.key === "Enter" && !e.shiftKey) {

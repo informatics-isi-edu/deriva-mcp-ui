@@ -7,9 +7,10 @@ from deriva_mcp_ui.config import Settings
 
 def test_defaults():
     s = Settings()
-    assert s.claude_model == "claude-haiku-4-5-20251001"
+    assert s.claude_model == "claude-haiku-4-5-latest"
     assert s.max_history_turns == 10
     assert s.session_ttl == 28800
+    assert s.history_ttl == 604800
     assert s.storage_backend == "memory"
     assert s.debug is False
 

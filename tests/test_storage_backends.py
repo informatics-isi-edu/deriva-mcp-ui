@@ -233,6 +233,15 @@ async def test_sweep_removes_expired_memory(monkeypatch):
     assert sid_dead not in s._sessions
 
 
+async def test_set_with_custom_ttl(store):
+    """set() with explicit ttl parameter stores the session."""
+    sid = _sid()
+    await store.set(sid, _session("alice"), ttl=999999)
+    result = await store.get(sid)
+    assert result is not None
+    assert result.user_id == "alice"
+
+
 # ---------------------------------------------------------------------------
 # create_store factory
 # ---------------------------------------------------------------------------

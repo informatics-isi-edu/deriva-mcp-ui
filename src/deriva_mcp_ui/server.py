@@ -16,12 +16,18 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from .audit import audit_event, init_audit_logger
-from .auth import ANON_COOKIE_NAME, RequireSession, _extract_display_name, user_session_key
+from .auth import (
+    ANON_COOKIE_NAME,
+    RequireSession,
+    _extract_display_name,
+    history_key,
+    user_session_key,
+)
 from .auth import router as auth_router
 from .chat import run_chat_turn
 from .config import Settings
 from .mcp_client import MCPAuthError
-from .storage import create_store
+from .storage import Session, create_store
 
 logger = logging.getLogger(__name__)
 
@@ -158,6 +164,50 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             }
         )
 
+    @app.get("/history")
+    async def get_history(session: RequireSession):  # type: ignore[misc]
+        """Return display-friendly conversation history for the current user."""
+        messages = []
+        for msg in session.history:
+            role = msg.get("role")
+            content = msg.get("content", "")
+            if role == "user":
+                # Plain text user messages only -- skip tool_result continuations
+                if isinstance(content, str):
+                    messages.append({"role": "user", "content": content})
+            elif role == "assistant":
+                # Extract text blocks, note tool calls by name
+                if isinstance(content, list):
+                    text_parts = []
+                    tool_names = []
+                    for block in content:
+                        if block.get("type") == "text":
+                            text_parts.append(block["text"])
+                        elif block.get("type") == "tool_use":
+                            tool_names.append(block.get("name", ""))
+                    if text_parts:
+                        messages.append({"role": "assistant", "content": "\n\n".join(text_parts)})
+                    if tool_names:
+                        messages.append({"role": "tool_use", "tools": tool_names})
+                elif isinstance(content, str) and content:
+                    messages.append({"role": "assistant", "content": content})
+        return JSONResponse({"messages": messages})
+
+    @app.delete("/history")
+    async def clear_history(session: RequireSession, request: Request):  # type: ignore[misc]
+        """Clear conversation history for the current user."""
+        store = request.app.state.store
+        session.history = []
+        session.tools = None
+        session.schema_primed = False
+        session.primed_schema = ""
+        session.primed_guides = ""
+        session.primed_ermrest = ""
+        await store.set(user_session_key(session.user_id), session)
+        await store.delete(history_key(session.user_id))
+        audit_event("history_cleared", user_id=session.user_id)
+        return JSONResponse({"status": "ok"})
+
     @app.post("/chat")
     async def chat(body: ChatRequest, session: RequireSession, request: Request):  # type: ignore[misc]
         store = request.app.state.store
@@ -181,8 +231,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         async def _event_stream():
             try:
                 async for event in run_chat_turn(body.message, session, s):
-                    if event.get("type") == "text":
+                    event_type = event.get("type")
+                    if event_type == "text":
                         yield f"data: {json.dumps(event['content'])}\n\n"
+                    elif event_type == "status":
+                        yield f"event: status\ndata: {json.dumps(event)}\n\n"
                     else:
                         yield f"event: tool\ndata: {json.dumps(event)}\n\n"
                 audit_event(
@@ -205,6 +258,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             finally:
                 # Persist updated session (history + cached tools) keyed by stable user_id
                 await store.set(user_session_key(session.user_id), session)
+                # Persist full (untrimmed) history with longer TTL so it survives session expiry
+                full = getattr(session, "full_history", session.history)
+                hist_session = Session(user_id=session.user_id, history=full)
+                await store.set(history_key(session.user_id), hist_session, ttl=s.history_ttl)
             yield "event: done\ndata: {}\n\n"
 
         return StreamingResponse(_event_stream(), media_type="text/event-stream")

@@ -1,13 +1,19 @@
 """MCP client wrapper.
 
-Provides two public coroutines used by the chat layer:
+Provides public coroutines used by the chat layer:
 
     list_tools(bearer_token, mcp_url) -> list[AnthropicTool]
     call_tool(bearer_token, name, arguments, mcp_url) -> str
+    get_prompt(bearer_token, name, mcp_url) -> str
+    open_session(bearer_token, mcp_url) -> async context manager
 
-Each call opens a fresh streamablehttp_client connection and discards it when
-done, matching the server's stateless_http=True model (no persistent session
-to maintain or reconnect).
+Each standalone call opens a fresh streamablehttp_client connection and
+discards it when done, matching the server's stateless_http=True model
+(no persistent session to maintain or reconnect).
+
+For batching multiple calls on a single connection, use open_session() and
+pass the yielded session to call_tool / get_prompt / list_tools via the
+optional ``session`` parameter.
 
 Typed exceptions
 ----------------
@@ -46,7 +52,7 @@ class MCPAuthError(Exception):
 
 
 # ---------------------------------------------------------------------------
-# Internal connection helper
+# Connection helpers
 # ---------------------------------------------------------------------------
 
 
@@ -75,6 +81,20 @@ async def _connect(mcp_url: str, bearer_token: str | None):
         raise MCPConnectionError(f"MCP server error {exc.response.status_code}: {exc}") from exc
     except (httpx.ConnectError, httpx.TimeoutException, OSError) as exc:
         raise MCPConnectionError(f"Cannot reach MCP server at {mcp_url}: {exc}") from exc
+
+
+@contextlib.asynccontextmanager
+async def open_session(bearer_token: str | None, mcp_url: str):
+    """Open a reusable MCP session for batching multiple calls.
+
+    Usage::
+
+        async with open_session(token, url) as sess:
+            tools = await list_tools(token, url, session=sess)
+            result = await call_tool(token, "my_tool", {}, url, session=sess)
+    """
+    async with _connect(mcp_url, bearer_token) as session:
+        yield session
 
 
 # ---------------------------------------------------------------------------
@@ -107,16 +127,27 @@ def _slim_input_schema(schema: dict[str, Any]) -> dict[str, Any]:
     return {**schema, "properties": slimmed}
 
 
-async def list_tools(bearer_token: str | None, mcp_url: str) -> list[AnthropicTool]:
+async def list_tools(
+    bearer_token: str | None,
+    mcp_url: str,
+    *,
+    session: ClientSession | None = None,
+) -> list[AnthropicTool]:
     """Return the MCP server's tool list in Anthropic schema format.
 
     MCP uses camelCase 'inputSchema'; Anthropic expects 'input_schema'.
     Per-property description and title fields are stripped from each tool's
     input_schema to reduce the fixed token cost of including the tool list
     in every API call.
+
+    Pass an existing ``session`` (from open_session) to avoid opening a new
+    connection.
     """
-    async with _connect(mcp_url, bearer_token) as session:
+    if session is not None:
         result = await session.list_tools()
+    else:
+        async with _connect(mcp_url, bearer_token) as sess:
+            result = await sess.list_tools()
 
     tools: list[AnthropicTool] = []
     for tool in result.tools:
@@ -132,11 +163,48 @@ async def list_tools(bearer_token: str | None, mcp_url: str) -> list[AnthropicTo
     return tools
 
 
+async def get_prompt(
+    bearer_token: str | None,
+    name: str,
+    mcp_url: str,
+    *,
+    session: ClientSession | None = None,
+) -> str:
+    """Fetch an MCP prompt by name and return its text content.
+
+    Returns the concatenated text of all messages in the prompt.
+    Returns an empty string if the prompt is not found or has no content.
+
+    Pass an existing ``session`` (from open_session) to avoid opening a new
+    connection.
+    """
+    try:
+        if session is not None:
+            result = await session.get_prompt(name)
+        else:
+            async with _connect(mcp_url, bearer_token) as sess:
+                result = await sess.get_prompt(name)
+        parts: list[str] = []
+        for msg in result.messages:
+            if hasattr(msg.content, "text"):
+                parts.append(msg.content.text)
+            elif isinstance(msg.content, str):
+                parts.append(msg.content)
+        text = "\n".join(parts)
+        logger.debug("get_prompt %s: %d chars", name, len(text))
+        return text
+    except Exception as exc:
+        logger.debug("get_prompt %s failed: %s", name, exc)
+        return ""
+
+
 async def call_tool(
     bearer_token: str | None,
     name: str,
     arguments: dict[str, Any],
     mcp_url: str,
+    *,
+    session: ClientSession | None = None,
 ) -> str:
     """Invoke a tool on the MCP server and return its output as a string.
 
@@ -146,9 +214,15 @@ async def call_tool(
 
     If the tool result carries isError=True the returned string is prefixed
     with 'Error: ' so Claude can report it clearly.
+
+    Pass an existing ``session`` (from open_session) to avoid opening a new
+    connection.
     """
-    async with _connect(mcp_url, bearer_token) as session:
+    if session is not None:
         result = await session.call_tool(name, arguments)
+    else:
+        async with _connect(mcp_url, bearer_token) as sess:
+            result = await sess.call_tool(name, arguments)
 
     parts: list[str] = []
     for block in result.content:

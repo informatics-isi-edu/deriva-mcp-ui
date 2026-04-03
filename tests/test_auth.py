@@ -11,6 +11,7 @@ from deriva_mcp_ui.auth import (
     _code_challenge,
     _generate_code_verifier,
     _token_key,
+    history_key,
     user_session_key,
 )
 from deriva_mcp_ui.config import Settings
@@ -572,3 +573,173 @@ async def test_logout_revocation_failure_is_nonfatal(app_and_store):
     # Logout must succeed despite revocation failure
     assert resp.status_code == 302
     assert await store.get(user_session_key("dave")) is None
+
+
+# ---------------------------------------------------------------------------
+# History persistence
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_history_endpoint_returns_messages(app_and_store):
+    """GET /history returns display-friendly messages from the session."""
+    app, store = app_and_store
+
+    bearer = "tok-hist"
+    now = time.time()
+    session = Session(
+        user_id="eve",
+        bearer_token=bearer,
+        created_at=now,
+        last_active=now,
+        history=[
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": [
+                {"type": "text", "text": "Hi there!"},
+                {"type": "tool_use", "id": "t1", "name": "get_schema", "input": {}},
+            ]},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "schema data"},
+            ]},
+            {"role": "assistant", "content": [
+                {"type": "text", "text": "Here is the schema."},
+            ]},
+        ],
+    )
+    await store.set(user_session_key("eve"), session)
+    await store.set(_token_key(bearer), Session(user_id="eve", bearer_token=bearer, created_at=now, last_active=now))
+
+    client = TestClient(app)
+    resp = client.get("/history", cookies={"deriva_chatbot_session": bearer})
+    assert resp.status_code == 200
+    messages = resp.json()["messages"]
+
+    # Should have: user text, assistant text + tool_use, assistant text
+    assert messages[0] == {"role": "user", "content": "hello"}
+    assert messages[1] == {"role": "assistant", "content": "Hi there!"}
+    assert messages[2] == {"role": "tool_use", "tools": ["get_schema"]}
+    # tool_result continuation should be skipped
+    assert messages[3] == {"role": "assistant", "content": "Here is the schema."}
+    assert len(messages) == 4
+
+
+@pytest.mark.asyncio
+async def test_clear_history(app_and_store):
+    """DELETE /history clears session history and history store entry."""
+    app, store = app_and_store
+
+    bearer = "tok-clear"
+    now = time.time()
+    session = Session(
+        user_id="hank",
+        bearer_token=bearer,
+        created_at=now,
+        last_active=now,
+        history=[{"role": "user", "content": "hello"}],
+    )
+    await store.set(user_session_key("hank"), session)
+    await store.set(_token_key(bearer), Session(user_id="hank", bearer_token=bearer, created_at=now, last_active=now))
+    await store.set(history_key("hank"), Session(user_id="hank", history=session.history), ttl=604800)
+
+    client = TestClient(app)
+    resp = client.delete("/history", cookies={"deriva_chatbot_session": bearer})
+    assert resp.status_code == 200
+
+    # Session history should be empty
+    updated = await store.get(user_session_key("hank"))
+    assert updated is not None
+    assert updated.history == []
+
+    # History store entry should be gone
+    assert await store.get(history_key("hank")) is None
+
+
+@pytest.mark.asyncio
+async def test_history_endpoint_empty(app_and_store):
+    """GET /history returns empty list for a session with no history."""
+    app, store = app_and_store
+
+    bearer = "tok-empty-hist"
+    now = time.time()
+    session = Session(user_id="frank", bearer_token=bearer, created_at=now, last_active=now)
+    await store.set(user_session_key("frank"), session)
+    await store.set(_token_key(bearer), Session(user_id="frank", bearer_token=bearer, created_at=now, last_active=now))
+
+    client = TestClient(app)
+    resp = client.get("/history", cookies={"deriva_chatbot_session": bearer})
+    assert resp.status_code == 200
+    assert resp.json()["messages"] == []
+
+
+@pytest.mark.asyncio
+async def test_history_restored_on_reauth(app_and_store):
+    """When uid: session is gone but history: entry exists, history is restored on login."""
+    app, store = app_and_store
+
+    # Simulate: history entry persists but session has expired
+    saved_history = [
+        {"role": "user", "content": "previous question"},
+        {"role": "assistant", "content": [{"type": "text", "text": "previous answer"}]},
+    ]
+    hist_session = Session(user_id="grace", history=saved_history)
+    await store.set(history_key("grace"), hist_session, ttl=604800)
+
+    # No uid: entry for grace -- simulates expired session
+    assert await store.get(user_session_key("grace")) is None
+
+    # Simulate login callback
+    with _mock_http(
+        token_resp_json={"access_token": "new-tok-grace"},
+        session_resp_json={"client": {"id": "grace", "display_name": "Grace"}},
+    ):
+        client = TestClient(app, follow_redirects=False)
+        resp = client.get("/login")
+        from urllib.parse import parse_qs, urlparse
+
+        location = resp.headers["location"]
+        query = parse_qs(urlparse(location).query)
+        state_val = query["state"][0]
+
+        client.get(
+            f"/callback?code=abc&state={state_val}",
+            cookies={"deriva_chatbot_pkce": resp.cookies["deriva_chatbot_pkce"]},
+        )
+
+    # After login, the session should have the restored history
+    session = await store.get(user_session_key("grace"))
+    assert session is not None
+    assert len(session.history) == 2
+    assert session.history[0]["content"] == "previous question"
+
+
+@pytest.mark.asyncio
+async def test_anonymous_history_restored_on_session_expiry(anon_app_and_store):
+    """Anonymous session expired but cookie + history: entry exist -- history restored."""
+    app, store = anon_app_and_store
+    client = TestClient(app, follow_redirects=False)
+
+    # Create initial anonymous session
+    resp1 = client.get("/session-info")
+    anon_id = resp1.cookies["deriva_chatbot_anon"]
+    user_id = resp1.json()["user_id"]
+
+    # Store history and then expire the session
+    saved_history = [
+        {"role": "user", "content": "anon question"},
+        {"role": "assistant", "content": [{"type": "text", "text": "anon answer"}]},
+    ]
+    hist_session = Session(user_id=user_id, history=saved_history)
+    await store.set(history_key(user_id), hist_session, ttl=604800)
+    # Delete the uid: session to simulate expiry
+    await store.delete(user_session_key(user_id))
+
+    # Request with same cookie -- should get a new session with restored history
+    resp2 = client.get("/session-info", cookies={"deriva_chatbot_anon": anon_id})
+    assert resp2.status_code == 200
+    assert resp2.json()["user_id"] == user_id
+
+    # Verify history was restored
+    session = await store.get(user_session_key(user_id))
+    assert session is not None
+    assert len(session.history) == 2
+    assert session.history[0]["content"] == "anon question"

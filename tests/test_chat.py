@@ -20,6 +20,12 @@ from deriva_mcp_ui.storage.base import Session
 # ---------------------------------------------------------------------------
 
 
+@contextlib.asynccontextmanager
+async def _mock_open_session(*_args, **_kwargs):
+    """Yield a MagicMock that stands in for a ClientSession."""
+    yield MagicMock()
+
+
 def _settings(**kw) -> Settings:
     base = dict(
         mcp_url="http://mcp:8000",
@@ -28,16 +34,18 @@ def _settings(**kw) -> Settings:
         mcp_resource="https://mcp.example.org",
         public_url="https://chatbot.example.org",
         anthropic_api_key="sk-ant-test",
-        claude_model="claude-haiku-4-5-20251001",
+        claude_model="claude-sonnet-4-6",
         max_history_turns=5,
     )
     base.update(kw)
     return Settings(**base)
 
 
-def _session() -> Session:
+def _session(schema_primed: bool = True) -> Session:
     now = time.time()
-    return Session(user_id="alice", bearer_token="tok", created_at=now, last_active=now)
+    sess = Session(user_id="alice", bearer_token="tok", created_at=now, last_active=now)
+    sess.schema_primed = schema_primed
+    return sess
 
 
 def _tool_block(tool_id: str, name: str, inp: dict) -> MagicMock:
@@ -249,16 +257,17 @@ async def test_run_chat_turn_fetches_tools_when_none():
     final = _final_message([_text_block("ok")], stop_reason="end_turn")
     fake_tools = [{"name": "get_entities", "input_schema": {}}]
 
-    with patch("deriva_mcp_ui.chat.list_tools", AsyncMock(return_value=fake_tools)) as mock_lt:
-        with patch("deriva_mcp_ui.chat.anthropic.AsyncAnthropic") as mock_cls:
-            mock_client = MagicMock()
-            mock_cls.return_value = mock_client
-            mock_client.messages.stream.return_value = _mock_stream(["ok"], final)
+    with patch("deriva_mcp_ui.chat.open_session", _mock_open_session):
+        with patch("deriva_mcp_ui.chat.list_tools", AsyncMock(return_value=fake_tools)) as mock_lt:
+            with patch("deriva_mcp_ui.chat.anthropic.AsyncAnthropic") as mock_cls:
+                mock_client = MagicMock()
+                mock_cls.return_value = mock_client
+                mock_client.messages.stream.return_value = _mock_stream(["ok"], final)
 
-            async for _ in run_chat_turn("hi", sess, s):
-                pass
+                async for _ in run_chat_turn("hi", sess, s):
+                    pass
 
-    mock_lt.assert_called_once_with("tok", "http://mcp:8000")
+    mock_lt.assert_called_once()
     assert sess.tools == fake_tools
 
 
@@ -481,7 +490,7 @@ def _default_settings(**kw) -> Settings:
         mcp_resource="https://mcp.example.org",
         public_url="https://chatbot.example.org",
         anthropic_api_key="sk-ant-test",
-        claude_model="claude-haiku-4-5-20251001",
+        claude_model="claude-sonnet-4-6",
         max_history_turns=5,
         default_hostname="facebase.org",
         default_catalog_id="1",
@@ -490,74 +499,71 @@ def _default_settings(**kw) -> Settings:
     return Settings(**base)
 
 
-async def test_prime_schema_uses_rag_search():
+async def test_prime_schema_fetches_all_schemas():
+    """_prime_schema calls get_catalog_info then get_schema for each schema."""
     s = _default_settings()
     sess = _session()
-    rag_result = "Table: Dataset, Table: Subject"
+    import json
 
-    with patch("deriva_mcp_ui.chat.call_tool", AsyncMock(return_value=rag_result)) as mock_ct:
-        result = await _prime_schema(sess, s)
+    catalog_info = json.dumps({
+        "hostname": "facebase.org", "catalog_id": "1",
+        "schemas": [{"schema": "isa", "tables": 3, "comment": None}],
+    })
+    schema_detail = json.dumps({
+        "schema": "isa", "comment": None,
+        "tables": [{"table": "Study", "columns": [{"name": "RID"}]}],
+    })
 
-    mock_ct.assert_called_once_with(
-        "tok",
-        "rag_search",
-        {"query": "tables columns schema", "hostname": "facebase.org", "catalog_id": "1"},
-        "http://mcp:8000",
-    )
-    assert result == rag_result
+    call_log: list[str] = []
 
-
-async def test_prime_schema_falls_back_to_get_schema_on_error():
-    s = _default_settings()
-    sess = _session()
-    schema_result = "Schema: isa"
-
-    call_count = 0
-
-    async def _side_effect(token, name, args, url):
-        nonlocal call_count
-        call_count += 1
-        if name == "rag_search":
-            raise RuntimeError("rag not available")
-        return schema_result
+    async def _side_effect(token, name, args, url, **kw):
+        call_log.append(name)
+        if name == "get_catalog_info":
+            return catalog_info
+        if name == "get_schema":
+            return schema_detail
+        return ""
 
     with patch("deriva_mcp_ui.chat.call_tool", side_effect=_side_effect):
         result = await _prime_schema(sess, s)
 
-    assert call_count == 2
-    assert result == schema_result
+    assert call_log == ["get_catalog_info", "get_schema"]
+    assert "Study" in result
 
 
-async def test_prime_schema_falls_back_on_rag_error_response():
-    """rag_search returning 'Error: ...' should trigger fallback."""
-    s = _default_settings()
-    sess = _session()
-
-    responses = {"rag_search": "Error: rag index not found", "get_schema": "Schema: isa"}
-
-    async def _side_effect(token, name, args, url):
-        return responses[name]
-
-    with patch("deriva_mcp_ui.chat.call_tool", side_effect=_side_effect):
-        result = await _prime_schema(sess, s)
-
-    assert result == "Schema: isa"
-
-
-async def test_prime_schema_truncates_long_result():
+async def test_prime_schema_truncates_large_schemas():
+    """Schema priming stops adding schemas once budget is exceeded."""
     from deriva_mcp_ui.chat import _SCHEMA_PRIMING_MAX_CHARS
+    import json
 
     s = _default_settings()
     sess = _session()
-    long_text = "x" * (_SCHEMA_PRIMING_MAX_CHARS + 1000)
 
-    with patch("deriva_mcp_ui.chat.call_tool", AsyncMock(return_value=long_text)):
+    catalog_info = json.dumps({
+        "hostname": "facebase.org", "catalog_id": "1",
+        "schemas": [
+            {"schema": "s1", "tables": 1, "comment": None},
+            {"schema": "s2", "tables": 1, "comment": None},
+        ],
+    })
+    # First schema fills the budget
+    big_schema = "x" * (_SCHEMA_PRIMING_MAX_CHARS + 100)
+
+    async def _side_effect(token, name, args, url, **kw):
+        if name == "get_catalog_info":
+            return catalog_info
+        if name == "get_schema" and args.get("schema") == "s1":
+            return big_schema
+        return '{"schema": "s2", "tables": []}'
+
+    with patch("deriva_mcp_ui.chat.call_tool", side_effect=_side_effect):
         result = await _prime_schema(sess, s)
 
-    assert len(result) == _SCHEMA_PRIMING_MAX_CHARS
+    # Only s1 should be included (fills budget), s2 skipped
+    assert result == big_schema
 
 
-async def test_prime_schema_returns_empty_when_both_fail():
+async def test_prime_schema_returns_empty_on_failure():
     s = _default_settings()
     sess = _session()
 
@@ -572,7 +578,7 @@ def test_system_prompt_includes_schema_context():
     sess = _session()
     ctx = "Table: Dataset\nTable: Subject"
     p = system_prompt(s, sess, schema_context=ctx)
-    assert "Available schema information:" in p
+    assert "Available schema information" in p
     assert ctx in p
 
 
@@ -586,15 +592,19 @@ def test_system_prompt_no_schema_context_no_separator():
 
 async def test_run_chat_turn_primes_schema_on_first_turn():
     s = _default_settings()
-    sess = _session()
+    sess = _session(schema_primed=False)
     sess.tools = []
     assert sess.schema_primed is False
 
     final = _final_message([_text_block("ok")], stop_reason="end_turn")
 
-    with patch(
+    with patch("deriva_mcp_ui.chat.open_session", _mock_open_session), patch(
         "deriva_mcp_ui.chat._prime_schema", AsyncMock(return_value="Schema: isa")
-    ) as mock_ps:
+    ) as mock_ps, patch(
+        "deriva_mcp_ui.chat._fetch_guides", AsyncMock(return_value="")
+    ), patch(
+        "deriva_mcp_ui.chat._prime_ermrest_syntax", AsyncMock(return_value="")
+    ):
         with patch("deriva_mcp_ui.chat.anthropic.AsyncAnthropic") as mock_cls:
             mock_client = MagicMock()
             mock_cls.return_value = mock_client
