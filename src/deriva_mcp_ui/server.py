@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import logging
+import pathlib
 import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -126,8 +128,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(auth_router)
 
-    import pathlib
-
     static_dir = pathlib.Path(__file__).parent / "static"
     if static_dir.exists() and any(static_dir.iterdir()):
         app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
@@ -210,11 +210,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return StreamingResponse(_event_stream(), media_type="text/event-stream")
 
     @app.get("/")
-    async def index():  # type: ignore[misc]
-        static_index = pathlib.Path(__file__).parent / "static" / "index.html"
-        if static_index.exists():
-            return FileResponse(str(static_index))
-        return JSONResponse({"status": "ok", "phase": "3 -- UI not yet built"})
+    async def index(request: Request):  # type: ignore[misc]
+        template = static_dir / "index.html"
+        if not template.exists():
+            return JSONResponse({"status": "ok", "phase": "3 -- UI not yet built"})
+        s: Settings = request.app.state.settings
+        page = template.read_text(encoding="utf-8")
+        page = page.replace("{{HEADER_TITLE}}", html.escape(s.header_title))
+        logo_url = html.escape(s.header_logo_url) if s.header_logo_url else ""
+        page = page.replace("{{HEADER_LOGO_URL}}", logo_url)
+        return HTMLResponse(page)
 
     return app
 

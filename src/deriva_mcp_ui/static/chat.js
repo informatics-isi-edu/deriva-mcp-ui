@@ -65,7 +65,9 @@
     userLabel.textContent = info.display_name || info.user_id || "";
 
     if (info.catalog_mode === "default" && info.label) {
-      catalogTitle.textContent = "DERIVA Chatbot: " + info.label;
+      var suffix = ": " + info.label;
+      catalogTitle.textContent += suffix;
+      document.title += suffix;
     }
 
     if (info.catalog_mode === "general") {

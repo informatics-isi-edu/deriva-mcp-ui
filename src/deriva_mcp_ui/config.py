@@ -6,8 +6,13 @@ ANTHROPIC_API_KEY is the one exception -- it uses the standard env var name.
 
 from __future__ import annotations
 
+from urllib.parse import urlparse
+
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_LOGO_ALLOWED_SCHEMES = ("https",)
+_LOGO_ALLOWED_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico")
 
 
 class Settings(BaseSettings):
@@ -32,6 +37,10 @@ class Settings(BaseSettings):
     default_hostname: str = ""
     default_catalog_id: str = ""
     default_catalog_label: str = ""
+
+    # Branding
+    header_title: str = "DERIVA Chatbot"
+    header_logo_url: str = "static/deriva-logo.png"
 
     # Tuning
     claude_model: str = "claude-haiku-4-5-20251001"
@@ -78,6 +87,25 @@ class Settings(BaseSettings):
                 "DERIVA_CHATBOT_DEFAULT_HOSTNAME and DERIVA_CHATBOT_DEFAULT_CATALOG_ID"
                 " must both be set (or both unset) to activate default-catalog mode"
             )
+
+        if self.header_logo_url:
+            is_relative = (
+                self.header_logo_url.startswith("static/")
+                and "/" not in self.header_logo_url[len("static/"):]
+            )
+            if not is_relative:
+                parsed = urlparse(self.header_logo_url)
+                if parsed.scheme not in _LOGO_ALLOWED_SCHEMES:
+                    raise ValueError(
+                        "DERIVA_CHATBOT_HEADER_LOGO_URL must use HTTPS or"
+                        f" a static/ relative path (got scheme {parsed.scheme!r})"
+                    )
+            path_lower = self.header_logo_url.lower()
+            if not any(path_lower.endswith(ext) for ext in _LOGO_ALLOWED_EXTENSIONS):
+                raise ValueError(
+                    "DERIVA_CHATBOT_HEADER_LOGO_URL must point to an image file"
+                    f" ({', '.join(_LOGO_ALLOWED_EXTENSIONS)})"
+                )
 
     @property
     def default_catalog_mode(self) -> bool:
