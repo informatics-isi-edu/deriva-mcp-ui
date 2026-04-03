@@ -10,7 +10,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from deriva_mcp_ui.chat import _prime_schema, run_chat_turn, system_prompt, trim_history
+from deriva_mcp_ui.chat import (
+    _fetch_guides,
+    _prime_ermrest_syntax,
+    _prime_schema,
+    run_chat_turn,
+    system_prompt,
+    trim_history,
+)
 from deriva_mcp_ui.config import Settings
 from deriva_mcp_ui.mcp_client import MCPAuthError
 from deriva_mcp_ui.storage.base import Session
@@ -825,3 +832,147 @@ async def test_run_chat_turn_poll_delay_on_repeated_tool():
     # and NOT called for the first iteration (new tool) or third (different stop_reason)
     poll_sleeps = [c for c in sleep_mock.call_args_list if c.args[0] == _POLL_DELAY_SECONDS]
     assert len(poll_sleeps) == 1
+
+
+# ---------------------------------------------------------------------------
+# Guide prompt fetching
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fetch_guides_returns_joined_prompts():
+    s = _default_settings()
+    sess = _session()
+
+    async def _mock_get_prompt(token, name, url, **kw):
+        return f"Guide for {name}"
+
+    with patch("deriva_mcp_ui.chat.get_prompt", AsyncMock(side_effect=_mock_get_prompt)):
+        result = await _fetch_guides(sess, s)
+
+    assert "Guide for query_guide" in result
+    assert "Guide for entity_guide" in result
+    assert "Guide for annotation_guide" in result
+    assert "Guide for catalog_guide" in result
+
+
+@pytest.mark.asyncio
+async def test_fetch_guides_skips_unavailable():
+    s = _default_settings()
+    sess = _session()
+
+    async def _mock_get_prompt(token, name, url, **kw):
+        if name == "query_guide":
+            return "query text"
+        return ""
+
+    with patch("deriva_mcp_ui.chat.get_prompt", AsyncMock(side_effect=_mock_get_prompt)):
+        result = await _fetch_guides(sess, s)
+
+    assert result == "query text"
+
+
+@pytest.mark.asyncio
+async def test_fetch_guides_returns_empty_on_total_failure():
+    s = _default_settings()
+    sess = _session()
+
+    with patch("deriva_mcp_ui.chat.get_prompt", AsyncMock(return_value="")):
+        result = await _fetch_guides(sess, s)
+
+    assert result == ""
+
+
+# ---------------------------------------------------------------------------
+# ERMrest syntax priming
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_prime_ermrest_syntax_returns_chunks():
+    s = _default_settings()
+    sess = _session()
+    import json
+
+    rag_result = json.dumps([
+        {"source": "doc1.md", "text": "ERMrest filter syntax"},
+        {"source": "doc2.md", "text": "ERMrest join syntax"},
+    ])
+
+    with patch("deriva_mcp_ui.chat.call_tool", AsyncMock(return_value=rag_result)):
+        result = await _prime_ermrest_syntax(sess, s)
+
+    assert "ERMrest filter syntax" in result
+    assert "ERMrest join syntax" in result
+
+
+@pytest.mark.asyncio
+async def test_prime_ermrest_syntax_deduplicates_by_source():
+    s = _default_settings()
+    sess = _session()
+    import json
+
+    # Both queries return the same source -- should appear only once
+    rag_result = json.dumps([{"source": "same.md", "text": "same chunk"}])
+
+    with patch("deriva_mcp_ui.chat.call_tool", AsyncMock(return_value=rag_result)):
+        result = await _prime_ermrest_syntax(sess, s)
+
+    assert result.count("same chunk") == 1
+
+
+@pytest.mark.asyncio
+async def test_prime_ermrest_syntax_returns_empty_on_failure():
+    s = _default_settings()
+    sess = _session()
+
+    with patch("deriva_mcp_ui.chat.call_tool", AsyncMock(side_effect=RuntimeError("down"))):
+        result = await _prime_ermrest_syntax(sess, s)
+
+    assert result == ""
+
+
+@pytest.mark.asyncio
+async def test_prime_ermrest_syntax_skips_error_results():
+    s = _default_settings()
+    sess = _session()
+
+    with patch("deriva_mcp_ui.chat.call_tool", AsyncMock(return_value="Error: rag not available")):
+        result = await _prime_ermrest_syntax(sess, s)
+
+    assert result == ""
+
+
+# ---------------------------------------------------------------------------
+# System prompt with guide and ermrest context
+# ---------------------------------------------------------------------------
+
+
+def test_system_prompt_includes_guide_context():
+    s = _default_settings()
+    sess = _session()
+    p = system_prompt(s, sess, guide_context="QUERY GUIDE TEXT")
+    assert "Tool usage guides:" in p
+    assert "QUERY GUIDE TEXT" in p
+
+
+def test_system_prompt_includes_ermrest_syntax():
+    s = _default_settings()
+    sess = _session()
+    p = system_prompt(s, sess, ermrest_syntax="ERMrest path syntax")
+    assert "ERMrest URL syntax reference:" in p
+    assert "ERMrest path syntax" in p
+
+
+def test_system_prompt_schema_loaded_rule_when_context_present():
+    s = _default_settings()
+    sess = _session()
+    p = system_prompt(s, sess, schema_context="Table: Dataset")
+    assert "SCHEMA IS ALREADY LOADED" in p
+
+
+def test_system_prompt_schema_lookup_rule_when_no_context():
+    s = _default_settings()
+    sess = _session()
+    p = system_prompt(s, sess, schema_context="")
+    assert "SCHEMA LOOKUP" in p

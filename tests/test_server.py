@@ -7,7 +7,7 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from deriva_mcp_ui.auth import _token_key, user_session_key
+from deriva_mcp_ui.auth import _token_key, require_session, user_session_key
 from deriva_mcp_ui.config import Settings
 from deriva_mcp_ui.server import create_app
 from deriva_mcp_ui.storage.base import Session
@@ -90,3 +90,81 @@ async def test_chat_message_too_long(app_and_store):
     )
     assert resp.status_code == 400
     assert "maximum length" in resp.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# /history -- GET and DELETE
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def app_with_session():
+    """App with dependency override so auth is bypassed."""
+    settings = _test_settings()
+    app = create_app(settings)
+    store = MemorySessionStore(ttl=settings.session_ttl)
+    app.state.store = store
+
+    now = time.time()
+    session = Session(
+        user_id="test-user",
+        bearer_token="tok",
+        created_at=now,
+        last_active=now,
+    )
+    app.dependency_overrides[require_session] = lambda: session
+    return app, store, session
+
+
+def test_get_history_empty(app_with_session):
+    app, _, _ = app_with_session
+    client = TestClient(app)
+    resp = client.get("/history")
+    assert resp.status_code == 200
+    assert resp.json() == {"messages": []}
+
+
+def test_get_history_extracts_messages(app_with_session):
+    app, _, session = app_with_session
+    session.history = [
+        {"role": "user", "content": "hello"},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "Hi there!"},
+                {"type": "tool_use", "name": "get_schema"},
+            ],
+        },
+        {"role": "assistant", "content": "plain response"},
+        # tool_result user messages (non-string content) should be skipped
+        {"role": "user", "content": [{"type": "tool_result", "content": "..."}]},
+    ]
+    client = TestClient(app)
+    resp = client.get("/history")
+    messages = resp.json()["messages"]
+    assert len(messages) == 4
+    assert messages[0] == {"role": "user", "content": "hello"}
+    assert messages[1] == {"role": "assistant", "content": "Hi there!"}
+    assert messages[2] == {"role": "tool_use", "tools": ["get_schema"]}
+    assert messages[3] == {"role": "assistant", "content": "plain response"}
+
+
+def test_clear_history(app_with_session):
+    app, _, session = app_with_session
+    session.history = [{"role": "user", "content": "old msg"}]
+    session.tools = [{"name": "tool1"}]
+    session.schema_primed = True
+    session.primed_schema = "schema text"
+    session.primed_guides = "guide text"
+    session.primed_ermrest = "ermrest text"
+
+    client = TestClient(app)
+    resp = client.delete("/history")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}
+    assert session.history == []
+    assert session.tools is None
+    assert session.schema_primed is False
+    assert session.primed_schema == ""
+    assert session.primed_guides == ""
+    assert session.primed_ermrest == ""
