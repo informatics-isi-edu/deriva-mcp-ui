@@ -24,7 +24,7 @@ from .auth import (
     user_session_key,
 )
 from .auth import router as auth_router
-from .chat import run_chat_turn
+from .chat import ChatCancelled, run_chat_turn
 from .config import Settings
 from .mcp_client import MCPAuthError
 from .storage import Session, create_store
@@ -112,7 +112,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     if settings is None:
         settings = Settings()
 
-    app = FastAPI(title="DERIVA Chatbot", lifespan=_lifespan)
+    app = FastAPI(title="DERIVA Data Assistant", lifespan=_lifespan)
     app.state.settings = settings
     app.state.store = None  # set during lifespan
 
@@ -149,18 +149,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/session-info")
     async def session_info(session: RequireSession, request: Request):  # type: ignore[misc]
         s: Settings = request.app.state.settings
+        cred = session.credenza_session or {}
+        client_block = cred.get("client") or {}
         display_name = (
             "Anonymous"
             if not s.auth_enabled
-            else (_extract_display_name(session.credenza_session) or session.user_id)
+            else (_extract_display_name(cred) or session.user_id)
+        )
+        full_name = (
+            cred.get("full_name")
+            or client_block.get("full_name")
+            or ""
+        )
+        email = (
+            cred.get("email")
+            or client_block.get("email")
+            or ""
         )
         return JSONResponse(
             {
                 "user_id": session.user_id,
                 "display_name": display_name,
+                "full_name": full_name,
+                "email": email,
                 "catalog_mode": "default" if s.default_catalog_mode else "general",
                 "label": s.default_catalog_label or s.default_hostname or "",
-                "credenza_session": session.credenza_session,
+                "hostname": s.default_hostname or "",
+                "credenza_session": cred,
             }
         )
 
@@ -227,10 +242,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
         audit_event("chat_request", user_id=session.user_id, msg_len=len(body.message))
         t0 = time.monotonic()
+        cancelled = asyncio.Event()
 
         async def _event_stream():
             try:
-                async for event in run_chat_turn(body.message, session, s):
+                async for event in run_chat_turn(body.message, session, s, cancelled=cancelled):
+                    # Check if client disconnected between yields
+                    if await request.is_disconnected():
+                        cancelled.set()
+                        logger.info("Client disconnected, cancelling chat for %s", session.user_id)
+                        break
                     event_type = event.get("type")
                     if event_type == "text":
                         yield f"data: {json.dumps(event['content'])}\n\n"
@@ -238,11 +259,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         yield f"event: status\ndata: {json.dumps(event)}\n\n"
                     else:
                         yield f"event: tool\ndata: {json.dumps(event)}\n\n"
-                audit_event(
-                    "chat_complete",
-                    user_id=session.user_id,
-                    duration_ms=round((time.monotonic() - t0) * 1000),
-                )
+                if not cancelled.is_set():
+                    audit_event(
+                        "chat_complete",
+                        user_id=session.user_id,
+                        duration_ms=round((time.monotonic() - t0) * 1000),
+                    )
+            except ChatCancelled:
+                logger.info("Chat cancelled for %s", session.user_id)
+                audit_event("chat_cancelled", user_id=session.user_id,
+                            duration_ms=round((time.monotonic() - t0) * 1000))
             except MCPAuthError:
                 audit_event("chat_error", user_id=session.user_id, error_type="MCPAuthError")
                 yield f"event: error\ndata: {json.dumps({'error': 'auth', 'detail': 'Session expired -- please log in again'})}\n\n"

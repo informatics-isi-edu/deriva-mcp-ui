@@ -7,7 +7,7 @@ from deriva_mcp_ui.config import Settings
 
 def test_defaults():
     s = Settings()
-    assert s.claude_model == "claude-haiku-4-5-latest"
+    assert s.claude_model == "claude-haiku-4-5"
     assert s.max_history_turns == 10
     assert s.session_ttl == 28800
     assert s.history_ttl == 604800
@@ -60,7 +60,7 @@ def test_validate_passes():
 
 def test_branding_defaults():
     s = Settings()
-    assert s.header_title == "DERIVA Chatbot"
+    assert s.header_title == "DERIVA Data Assistant"
     assert s.header_logo_url == "static/deriva-logo.png"
 
 

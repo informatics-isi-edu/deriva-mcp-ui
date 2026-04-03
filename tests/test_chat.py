@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import time
 from collections.abc import AsyncIterator
@@ -11,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from deriva_mcp_ui.chat import (
+    ChatCancelled,
     _fetch_guides,
     _prime_ermrest_syntax,
     _prime_schema,
@@ -976,3 +978,28 @@ def test_system_prompt_schema_lookup_rule_when_no_context():
     sess = _session()
     p = system_prompt(s, sess, schema_context="")
     assert "SCHEMA LOOKUP" in p
+
+
+# ---------------------------------------------------------------------------
+# Cancellation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_chat_turn_stops_on_cancelled_event():
+    """When the cancelled event is set, the loop raises ChatCancelled."""
+    s = _settings()
+    sess = _session()
+    sess.tools = [{"name": "get_schema", "input_schema": {}}]
+
+    cancelled = asyncio.Event()
+    cancelled.set()  # pre-set -- should stop immediately
+
+    events = []
+    with pytest.raises(ChatCancelled):
+        with patch("deriva_mcp_ui.chat.anthropic.AsyncAnthropic"):
+            async for ev in run_chat_turn("hello", sess, s, cancelled=cancelled):
+                events.append(ev)
+
+    # No events should have been yielded -- cancelled before first LLM call
+    assert len(events) == 0

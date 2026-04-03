@@ -41,8 +41,10 @@
     }
     #header-logo[src=""] { display: none; }
     #header h1 { font-size: 1rem; font-weight: 600; letter-spacing: 0.02em; line-height: 1; margin-top: -2px; }
+    #header h1 a { text-decoration: none; }
+    #header h1 a:hover { text-decoration: underline; }
     #header-right { display: flex; align-items: center; gap: 1rem; font-size: 0.85rem; opacity: 0.85; }
-    #user-label { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #user-label { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: default; }
     #clear-history-btn {
       background: none;
       border: 1px solid rgba(168, 196, 232, 0.4);
@@ -293,6 +295,8 @@
     }
     #send-btn:hover:not(:disabled) { background: #e8ecf0; }
     #send-btn:disabled { background: #f5f5f5; color: #8fa8c8; border-color: #8fa8c8; cursor: not-allowed; }
+    #send-btn.stop-mode { background: #c0392b; color: #fff; border-color: #c0392b; }
+    #send-btn.stop-mode:hover { background: #a93226; }
   </style>
 </head>
 <body>

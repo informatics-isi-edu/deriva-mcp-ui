@@ -39,11 +39,11 @@ class Settings(BaseSettings):
     default_catalog_label: str = ""
 
     # Branding
-    header_title: str = "DERIVA Chatbot"
+    header_title: str = "DERIVA Data Assistant"
     header_logo_url: str = "static/deriva-logo.png"
 
     # Tuning
-    claude_model: str = "claude-haiku-4-5-latest"
+    claude_model: str = "claude-haiku-4-5"
     max_history_turns: int = 10
     max_message_length: int = 10000
     session_ttl: int = 28800

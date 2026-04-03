@@ -1,7 +1,7 @@
 # deriva-mcp-ui Workplan and Design
 
-**Status:** Phases 0-8 complete + post-Phase-8 anonymous mode hardening + schema priming/guide injection (Phase 9 design
-only)
+**Status:** Phases 0-8 complete + post-Phase-8 anonymous mode hardening + schema priming/guide injection (Phases 9-10
+design only)
 
 **Target repo:** `deriva-mcp-ui`
 
@@ -266,14 +266,14 @@ The system prompt is not counted as history and is always prepended fresh.
 
 **Tuning:**
 
-| Variable                             | Default                   | Description                                                                                                                                                              |
-|--------------------------------------|---------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `DERIVA_CHATBOT_CLAUDE_MODEL`        | `claude-haiku-4-5-latest` | Claude model ID (Haiku is sufficient after prompt engineering work; override to Sonnet if needed)                                                                        |
-| `DERIVA_CHATBOT_MAX_HISTORY_TURNS`   | `10`                      | Max conversation turns retained in server-side history                                                                                                                   |
-| `DERIVA_CHATBOT_SESSION_TTL`         | `28800`                   | Server-side session TTL in seconds (default 8h)                                                                                                                          |
-| `DERIVA_CHATBOT_STORAGE_BACKEND`     | `memory`                  | Session store backend: `memory`, `redis`, `valkey`, `postgresql`, `sqlite`                                                                                               |
-| `DERIVA_CHATBOT_STORAGE_BACKEND_URL` | --                        | Connection URL for the selected backend (not used for `memory`). Examples: `redis://localhost:6379/0`, `postgresql://user:pass@host/db`, `sqlite:///path/to/sessions.db` |
-| `DERIVA_CHATBOT_DEBUG`               | `false`                   | Enable debug logging and show tool calls in the UI                                                                                                                       |
+| Variable                             | Default            | Description                                                                                                                                                              |
+|--------------------------------------|--------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `DERIVA_CHATBOT_CLAUDE_MODEL`        | `claude-haiku-4-5` | Claude model ID (Haiku is sufficient after prompt engineering work; override to Sonnet if needed)                                                                        |
+| `DERIVA_CHATBOT_MAX_HISTORY_TURNS`   | `10`               | Max conversation turns retained in server-side history                                                                                                                   |
+| `DERIVA_CHATBOT_SESSION_TTL`         | `28800`            | Server-side session TTL in seconds (default 8h)                                                                                                                          |
+| `DERIVA_CHATBOT_STORAGE_BACKEND`     | `memory`           | Session store backend: `memory`, `redis`, `valkey`, `postgresql`, `sqlite`                                                                                               |
+| `DERIVA_CHATBOT_STORAGE_BACKEND_URL` | --                 | Connection URL for the selected backend (not used for `memory`). Examples: `redis://localhost:6379/0`, `postgresql://user:pass@host/db`, `sqlite:///path/to/sessions.db` |
+| `DERIVA_CHATBOT_DEBUG`               | `false`            | Enable debug logging and show tool calls in the UI                                                                                                                       |
 
 ---
 
@@ -650,7 +650,7 @@ the user is active, surviving multiple re-authentication cycles.
       (raised from 6000 after testing showed 10 study rows were being truncated)
     - `_HISTORY_TOOL_RESULT_MAX = 3000` chars -- stored in session history for subsequent turns
 
-- **Model default**: Haiku (`claude-haiku-4-5-latest`). Haiku has a 200k token/min rate
+- **Model default**: Haiku (`claude-haiku-4-5`). Haiku has a 200k token/min rate
   limit (vs ~30k for Sonnet at the free tier) and is sufficient for DERIVA data assistant
   workloads after prompt engineering hardening (guide injection, mandatory rules in system
   prompt). Override with `DERIVA_CHATBOT_CLAUDE_MODEL`.
@@ -952,6 +952,248 @@ it and attaches the `Set-Cookie` header to the outgoing response.
 
 ---
 
+### Phase 10 -- Multi-Provider LLM Support and RAG-Only Mode
+
+**Status:** Design only.
+
+---
+
+#### Motivation
+
+The chatbot is currently hard-coupled to the Anthropic SDK. This creates two problems:
+
+1. **Vendor lock-in.** Operators may prefer OpenAI, Google, or a local model (Ollama)
+   for cost, compliance, or latency reasons.
+2. **Barrier to entry.** Deployments that cannot or will not pay for a cloud API key
+   have no way to use the chatbot at all, even for simple documentation and schema
+   lookups that don't require an LLM.
+
+This phase addresses both by introducing a provider abstraction and a RAG-only fallback
+mode, so the chatbot operates across a spectrum from zero-cost local retrieval to
+full-featured cloud LLM tool-calling.
+
+---
+
+#### Operating tiers
+
+The chatbot supports three operating tiers, auto-detected from configuration:
+
+| Tier            | Config                                               | Capabilities                                              | Cost                 |
+|-----------------|------------------------------------------------------|-----------------------------------------------------------|----------------------|
+| **RAG-only**    | No LLM API key, no local model                       | Documentation search, schema lookup, source-cited answers | Zero                 |
+| **Local model** | `DERIVA_CHATBOT_LLM_PROVIDER=ollama`                 | Full tool-calling loop, slower, quality varies by model   | Zero (hardware only) |
+| **Cloud API**   | `DERIVA_CHATBOT_LLM_PROVIDER=anthropic\|openai\|...` | Full tool-calling loop, fast, best quality                | Per-token            |
+
+Auto-detection logic:
+
+- If `DERIVA_CHATBOT_LLM_API_KEY` (or provider-specific key) is set and a model is
+  configured, use cloud API.
+- If `DERIVA_CHATBOT_LLM_PROVIDER=ollama` and a model is configured, use local model.
+- If neither is configured, fall back to RAG-only mode.
+- Operators can force RAG-only mode with `DERIVA_CHATBOT_MODE=rag_only` even when an
+  API key is present (useful for cost control).
+
+---
+
+#### Provider abstraction via LiteLLM
+
+Replace direct `anthropic` SDK usage with [LiteLLM](https://docs.litellm.ai/), which
+provides a unified interface across 100+ providers:
+
+- Anthropic (Claude) -- `claude-haiku-4-5`, `claude-sonnet-4-6`, etc.
+- OpenAI -- `gpt-4o`, `gpt-4o-mini`, `o3-mini`, etc.
+- Google -- `gemini/gemini-2.5-flash`, etc.
+- Ollama (local) -- `ollama/llama3.1:8b`, `ollama/mistral:7b`, etc.
+- Azure OpenAI, AWS Bedrock, etc.
+
+LiteLLM normalizes the request/response format (messages, tools, streaming, stop
+reasons) so the tool-calling loop in `run_chat_turn` requires minimal changes.
+
+**Prompt caching passthrough:** The `cache_control: {"type": "ephemeral"}` annotation
+on system prompt and tool list blocks is kept as-is. LiteLLM forwards it to Anthropic
+(where it activates prompt caching at 0.1x token cost) and other providers silently
+ignore the unknown field. If a future provider rejects unknown fields, add a model
+prefix check to conditionally include it.
+
+**Configuration changes:**
+
+| Variable                      | Description                                                                                     |
+|-------------------------------|-------------------------------------------------------------------------------------------------|
+| `DERIVA_CHATBOT_LLM_PROVIDER` | Provider name: `anthropic`, `openai`, `ollama`, etc. Auto-detected from model string if omitted |
+| `DERIVA_CHATBOT_LLM_MODEL`    | Model identifier (e.g. `claude-haiku-4-5`, `gpt-4o-mini`, `ollama/llama3.1:8b`)                 |
+| `DERIVA_CHATBOT_LLM_API_KEY`  | API key for the configured provider. Not needed for Ollama                                      |
+| `DERIVA_CHATBOT_LLM_API_BASE` | Custom API base URL (for Ollama, Azure, self-hosted endpoints)                                  |
+| `DERIVA_CHATBOT_MODE`         | `auto` (default), `rag_only`, `llm`. Forces operating tier                                      |
+
+The current `ANTHROPIC_API_KEY`, `DERIVA_CHATBOT_CLAUDE_MODEL`, and `anthropic_api_key`
+config fields are replaced outright -- no backward compatibility shims.
+
+**Code changes in `chat.py`:**
+
+The main change is replacing:
+
+```python
+import anthropic
+
+client = anthropic.AsyncAnthropic(api_key=...)
+async with client.messages.stream(**kwargs) as stream:
+    ...
+```
+
+With:
+
+```python
+import litellm
+
+response = await litellm.acompletion(model=..., messages=..., tools=..., stream=True)
+async for chunk in response:
+    ...
+```
+
+LiteLLM's streaming interface yields chunks with a unified schema. Tool-calling
+responses use the same `tool_calls` / `tool_use` structure regardless of provider.
+The retry logic (`RateLimitError`, 529 overloaded) maps to LiteLLM's unified exception
+hierarchy.
+
+**Tool schema format:** LiteLLM uses the OpenAI tool schema format (`function.parameters`)
+rather than Anthropic's (`input_schema`). `mcp_client.py` already converts MCP's
+`inputSchema` to `input_schema`; this conversion changes to target `function.parameters`
+instead (or LiteLLM handles the mapping -- TBD during implementation).
+
+---
+
+#### RAG-only mode
+
+When no LLM is available (or `DERIVA_CHATBOT_MODE=rag_only`), the chat endpoint
+bypasses the tool-calling loop entirely and serves answers directly from the MCP
+server's RAG subsystem.
+
+**Request flow:**
+
+```
+User message
+  -> call rag_search(query=user_message) via MCP
+  -> format results with source citations
+  -> return as SSE text event (same as LLM mode, so the UI is unchanged)
+```
+
+**Response formatting (`chat.py`, new function):**
+
+A `_rag_only_response()` function handles the no-LLM path:
+
+1. Call `rag_search` with the user's message via `call_tool()`.
+2. Parse the JSON result into a list of `{text, source, score}` entries.
+3. Apply question-type detection (regex-based, inspired by fb-chatbot):
+    - "What is X" -> extract definitional sentences from top chunks
+    - "How do I X" -> extract procedural sentences
+    - General -> concatenate top chunks with source attribution
+4. Format as Markdown with source citations:
+   ```
+   Based on available documentation:
+
+   [relevant text from top chunks]
+
+   ---
+   Sources:
+   - Document Title (relevance: 0.85)
+   - Document Title (relevance: 0.72)
+   ```
+5. Yield as `{"type": "text", "content": ...}` SSE event.
+
+**Schema lookups:** For schema-related questions ("what tables are in this catalog",
+"what columns does Subject have"), RAG-only mode can also call `get_schema` or
+`get_catalog_info` directly via `call_tool()` and format the structured response.
+Question-type detection routes schema keywords to the appropriate MCP tool.
+
+**Limitations clearly communicated:** The UI should indicate when operating in
+RAG-only mode (e.g., a subtle banner: "Running in search mode -- responses are based
+on indexed documentation"). This sets expectations that the chatbot cannot execute
+multi-step queries, write ERMrest paths, or perform data analysis.
+
+**History and priming:** RAG-only mode still uses the same session, history store,
+and schema priming infrastructure. The primed schema context helps with question-type
+routing even without an LLM.
+
+---
+
+#### Local model considerations
+
+For Ollama / local model deployments:
+
+- **Minimum viable model:** 7-8B parameter class (Llama 3.1 8B, Mistral 7B) is the
+  smallest that can reliably generate correct JSON tool calls. Sub-3B models
+  hallucinate parameter names and forget required fields.
+- **System requirements:** ~6GB RAM for a Q4-quantized 8B model on CPU. GPU
+  recommended for acceptable latency (<5s per response).
+- **Ollama API:** Exposes an OpenAI-compatible endpoint, so LiteLLM routes to it
+  via `ollama/model-name` model strings with `api_base` pointing to the Ollama host.
+- **Docker compose:** An Ollama service can be added to the `deriva-docker` stack
+  for local development. The model is pulled on first use and cached.
+
+---
+
+#### Companion work in deriva-mcp-core
+
+The RAG-only mode's usefulness depends heavily on the quality of indexed content.
+Two enhancements in mcp-core's plugin API support this:
+
+**1. Dataset enrichment hooks (`ctx.rag_dataset_indexer()`):**
+
+Plugins can declare tables whose rows should be enriched via FK traversal before
+RAG indexing. Inspired by fb-chatbot's `FaceBaseDataBaseCrawler`, which followed
+FKs from `isa:dataset` to pull in project names, contributors, and vocabulary terms,
+then composed rich Markdown per dataset.
+
+```python
+# In a hypothetical facebase plugin:
+def register(ctx: PluginContext):
+    ctx.rag_dataset_indexer(
+        schema="isa",
+        table="dataset",
+        filter={"released": True},
+        enricher=enrich_dataset,  # returns Markdown per row
+    )
+
+
+async def enrich_dataset(row, catalog) -> str:
+    # Follow FKs, build rich Markdown document
+    ...
+```
+
+This runs at catalog connect time (alongside schema indexing) or on a configurable
+schedule. The enriched Markdown is chunked and indexed in the RAG store, scoped to
+the catalog.
+
+**2. Web source crawling (Phase 7.1, already planned):**
+
+`WebSource` + `WebCrawler` for indexing external documentation (DERIVA docs, project
+websites). Combined with dataset enrichment, this gives RAG-only mode a rich knowledge
+base covering both documentation and catalog content.
+
+These are tracked in the deriva-mcp-core workplan (Phase 7.1 and plugin API extensions).
+
+---
+
+#### Implementation plan
+
+**Step 1: LiteLLM integration.** Replace `anthropic` SDK with `litellm` in `chat.py`.
+Update config to use provider-agnostic variable names (with backward compat aliases).
+Verify tool-calling loop works with Anthropic, OpenAI, and Ollama. Keep `cache_control`
+passthrough.
+
+**Step 2: RAG-only response path.** Add `_rag_only_response()` in `chat.py`. Route
+to it when no LLM is configured. Implement question-type detection and template-based
+formatting. Add "search mode" indicator to the UI.
+
+**Step 3: Auto-detection and config.** Implement tier auto-detection from config.
+Add `DERIVA_CHATBOT_MODE` override. Update `validate_for_http()` to accept
+RAG-only config (no API key required, only `mcp_url`).
+
+**Step 4: Documentation and testing.** Update config reference. Add tests for each
+tier. Document Ollama setup in docker compose.
+
+---
+
 ## Out of Scope
 
 - Multi-user conversation sharing or persistence across browser sessions (each session
@@ -960,4 +1202,5 @@ it and attaches the `Set-Cookie` header to the outgoing response.
   but the UI does not handle binary transfers)
 - Customizable system prompts per-user (operator-set only via config)
 - WebSocket transport (SSE over HTTP is sufficient and simpler to proxy)
-- Any modification to `deriva-mcp-core` -- the MCP server is consumed as-is
+- Modifications to `deriva-mcp-core` beyond the plugin API extensions described in
+  Phase 10 (dataset enrichment hooks, web source crawling)

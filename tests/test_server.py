@@ -93,6 +93,61 @@ async def test_chat_message_too_long(app_and_store):
 
 
 # ---------------------------------------------------------------------------
+# /session-info
+# ---------------------------------------------------------------------------
+
+
+def test_session_info_includes_identity_fields():
+    settings = _test_settings(default_hostname="example.org", default_catalog_id="1")
+    app = create_app(settings)
+    store = MemorySessionStore(ttl=settings.session_ttl)
+    app.state.store = store
+
+    now = time.time()
+    session = Session(
+        user_id="https://idp.example.org/sub123",
+        bearer_token="tok",
+        credenza_session={
+            "preferred_username": "jdoe",
+            "full_name": "Jane Doe",
+            "email": "jane@example.org",
+        },
+        created_at=now,
+        last_active=now,
+    )
+    app.dependency_overrides[require_session] = lambda: session
+
+    client = TestClient(app)
+    resp = client.get("/session-info")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["display_name"] == "jdoe"
+    assert data["full_name"] == "Jane Doe"
+    assert data["email"] == "jane@example.org"
+    assert data["hostname"] == "example.org"
+    assert data["user_id"] == "https://idp.example.org/sub123"
+
+
+def test_session_info_anonymous_mode():
+    settings = Settings(mcp_url="http://mcp", anthropic_api_key="sk-ant-test")
+    app = create_app(settings)
+    store = MemorySessionStore(ttl=settings.session_ttl)
+    app.state.store = store
+
+    now = time.time()
+    session = Session(user_id="anonymous/abc", created_at=now, last_active=now)
+    app.dependency_overrides[require_session] = lambda: session
+
+    client = TestClient(app)
+    resp = client.get("/session-info")
+    data = resp.json()
+    assert data["display_name"] == "Anonymous"
+    assert data["full_name"] == ""
+    assert data["email"] == ""
+    assert data["hostname"] == ""
+
+
+# ---------------------------------------------------------------------------
 # /history -- GET and DELETE
 # ---------------------------------------------------------------------------
 

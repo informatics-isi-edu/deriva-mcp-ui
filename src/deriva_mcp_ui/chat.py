@@ -264,6 +264,8 @@ async def _prime_ermrest_syntax(session: Session, settings: Settings, *, mcp_ses
         except Exception:
             continue
         for entry in entries:
+            if not isinstance(entry, dict):
+                continue
             source = entry.get("source", "")
             text = entry.get("text", "")
             if not text or source in seen_sources:
@@ -396,10 +398,15 @@ def trim_history(messages: list[dict[str, Any]], max_turns: int) -> list[dict[st
 # ---------------------------------------------------------------------------
 
 
+class ChatCancelled(Exception):
+    """Raised when the client disconnects and the chat turn is aborted."""
+
+
 async def run_chat_turn(
     user_message: str,
     session: Session,
     settings: Settings,
+    cancelled: asyncio.Event | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Run one chat turn and yield event dicts as Claude produces output.
 
@@ -413,6 +420,10 @@ async def run_chat_turn(
     (caches on first call), and session.schema_primed (set after first-turn
     priming).  The caller must persist the session after the iterator is
     exhausted.
+
+    If *cancelled* is set, the generator stops at the next check point
+    (before each LLM call and before each tool call) and saves partial
+    history.
 
     Raises MCPAuthError if the MCP server rejects the bearer token.
     """
@@ -471,9 +482,15 @@ async def run_chat_turn(
         {"role": "user", "content": user_message}
     ]
 
+    def _check_cancelled() -> None:
+        if cancelled is not None and cancelled.is_set():
+            raise ChatCancelled()
+
     prev_tool_names: set[str] = set()  # tools called in the previous loop iteration
 
     while True:
+        _check_cancelled()
+
         stream_kwargs: dict[str, Any] = dict(
             model=settings.claude_model,
             max_tokens=_MAX_TOKENS,
@@ -538,6 +555,7 @@ async def run_chat_turn(
             if block.type != "tool_use":
                 continue
 
+            _check_cancelled()
             yield {"type": "tool_start", "name": block.name, "input": block.input}
             try:
                 result_text = await call_tool(

@@ -1,4 +1,4 @@
-/* DERIVA Chatbot -- chat.js
+/* DERIVA Data Assistant -- chat.js
  *
  * Handles:
  *   - session-info fetch to populate header and catalog mode
@@ -30,6 +30,7 @@
     '<span class="loading-dots"><span></span><span></span><span></span></span>';
 
   let busy = false;
+  let abortController = null;
 
   // ------------------------------------------------------------------
   // Logged-out state: show login link, hide input
@@ -63,12 +64,31 @@
       return;
     }
 
-    userLabel.textContent = info.display_name || info.user_id || "";
+    // User identity -- show display_name with hover tooltip for full details
+    var shortName = info.display_name || info.user_id || "";
+    userLabel.textContent = shortName;
+    var tooltipLines = [shortName];
+    if (info.full_name && info.full_name !== shortName) tooltipLines.push(info.full_name);
+    if (info.email) tooltipLines.push(info.email);
+    if (info.user_id && info.user_id !== shortName) tooltipLines.push(info.user_id);
+    userLabel.title = tooltipLines.join("\n");
 
     if (info.catalog_mode === "default" && info.label) {
-      var suffix = ": " + info.label;
-      catalogTitle.textContent += suffix;
-      document.title += suffix;
+      var label = info.label;
+      var hostname = info.hostname || "";
+      if (hostname) {
+        catalogTitle.appendChild(document.createTextNode(": "));
+        var link = document.createElement("a");
+        link.href = "https://" + hostname;
+        link.textContent = label;
+        link.target = "_blank";
+        link.rel = "noopener";
+        link.style.color = "#a8c4e8";
+        catalogTitle.appendChild(link);
+      } else {
+        catalogTitle.textContent += ": " + label;
+      }
+      document.title += ": " + label;
     }
 
     if (info.catalog_mode === "general") {
@@ -141,12 +161,22 @@
   // Send a message
   // ------------------------------------------------------------------
 
+  function stopGeneration() {
+    if (abortController) {
+      abortController.abort();
+      abortController = null;
+    }
+  }
+
   async function sendMessage() {
     const text = input.value.trim();
     if (!text || busy) return;
 
     busy = true;
-    sendBtn.disabled = true;
+    abortController = new AbortController();
+    sendBtn.textContent = "Stop";
+    sendBtn.classList.add("stop-mode");
+    sendBtn.disabled = false;
     input.value = "";
     autoResize();
 
@@ -170,6 +200,7 @@
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
+        signal: abortController ? abortController.signal : undefined,
       });
 
       if (resp.status === 401) { assistantEl.remove(); showLoggedOutState(); return; }
@@ -255,6 +286,16 @@
         }
       }
     } catch (err) {
+      if (err.name === "AbortError") {
+        // User clicked Stop -- keep any partial content
+        if (accumulated) {
+          accumulated += "\n\n*[stopped]*";
+          renderFinal(assistantEl, accumulated);
+        } else if (!assistantEl.querySelector(".tool-call")) {
+          assistantEl.remove();
+        }
+        return;
+      }
       if (accumulated) {
         renderFinal(assistantEl, accumulated);
       } else if (!assistantEl.querySelector(".tool-call")) {
@@ -268,6 +309,9 @@
       if (thinkingEl) thinkingEl.remove();
 
       busy = false;
+      abortController = null;
+      sendBtn.textContent = "Send";
+      sendBtn.classList.remove("stop-mode");
       sendBtn.disabled = false;
       input.focus();
     }
@@ -487,7 +531,13 @@
   // Event listeners
   // ------------------------------------------------------------------
 
-  sendBtn.addEventListener("click", sendMessage);
+  sendBtn.addEventListener("click", function () {
+    if (busy) {
+      stopGeneration();
+    } else {
+      sendMessage();
+    }
+  });
 
   clearHistoryBtn.addEventListener("click", async function () {
     if (!confirm("Clear conversation history?")) return;

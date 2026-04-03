@@ -74,15 +74,15 @@ Set both variables to anchor the chatbot to a specific catalog:
 
 ### Tuning
 
-| Variable                             | Default                     | Description                                                          |
-|--------------------------------------|-----------------------------|----------------------------------------------------------------------|
-| `DERIVA_CHATBOT_CLAUDE_MODEL`        | `claude-haiku-4-5-20251001` | Claude model ID                                                      |
-| `DERIVA_CHATBOT_MAX_HISTORY_TURNS`   | `10`                        | Conversation turns retained per session                              |
-| `DERIVA_CHATBOT_MAX_MESSAGE_LENGTH`  | `10000`                     | Maximum user message length in characters                            |
-| `DERIVA_CHATBOT_SESSION_TTL`         | `28800`                     | Server-side session TTL in seconds (default 8h)                      |
-| `DERIVA_CHATBOT_STORAGE_BACKEND`     | `memory`                    | Session backend: `memory`, `redis`, `valkey`, `postgresql`, `sqlite` |
-| `DERIVA_CHATBOT_STORAGE_BACKEND_URL` | --                          | Connection URL for the selected backend                              |
-| `DERIVA_CHATBOT_DEBUG`               | `false`                     | Enable debug logging                                                 |
+| Variable                             | Default            | Description                                                          |
+|--------------------------------------|--------------------|----------------------------------------------------------------------|
+| `DERIVA_CHATBOT_CLAUDE_MODEL`        | `claude-haiku-4-5` | Claude model ID                                                      |
+| `DERIVA_CHATBOT_MAX_HISTORY_TURNS`   | `10`               | Conversation turns retained per session                              |
+| `DERIVA_CHATBOT_MAX_MESSAGE_LENGTH`  | `10000`            | Maximum user message length in characters                            |
+| `DERIVA_CHATBOT_SESSION_TTL`         | `28800`            | Server-side session TTL in seconds (default 8h)                      |
+| `DERIVA_CHATBOT_STORAGE_BACKEND`     | `memory`           | Session backend: `memory`, `redis`, `valkey`, `postgresql`, `sqlite` |
+| `DERIVA_CHATBOT_STORAGE_BACKEND_URL` | --                 | Connection URL for the selected backend                              |
+| `DERIVA_CHATBOT_DEBUG`               | `false`            | Enable debug logging                                                 |
 
 Storage URL examples:
 
