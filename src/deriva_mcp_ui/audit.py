@@ -55,9 +55,7 @@ def init_audit_logger(use_syslog: bool = False) -> None:
         except Exception:
             handler = StreamHandler()
 
-    formatter = jsonlogger.JsonFormatter(
-        "{message}", style="{", rename_fields={"message": "event"}
-    )
+    formatter = jsonlogger.JsonFormatter("{message}", style="{", rename_fields={"message": "event"})
     handler.setFormatter(formatter)
     _logger.addHandler(handler)
     _logger.setLevel(logging.INFO)

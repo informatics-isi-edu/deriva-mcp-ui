@@ -193,6 +193,7 @@ async def _get_or_create_anonymous_session(
     )
     if hist_entry is not None:
         session.history = hist_entry.history
+        session.input_history = hist_entry.input_history
     await store.set(user_session_key(session.user_id), session)
     # Stash cookie info for _anon_cookie_middleware to attach to the response
     request.state.new_anon_id = (anon_id, settings.session_ttl)
@@ -323,6 +324,7 @@ async def callback(request: Request, code: str = "", state: str = "", error: str
         hist_entry = await store.get(history_key(user_id))
         if hist_entry is not None:
             session.history = hist_entry.history
+            session.input_history = hist_entry.input_history
 
     # Store full session keyed by user_id (persistent across re-auth)
     await store.set(user_session_key(user_id), session)
@@ -339,10 +341,12 @@ async def callback(request: Request, code: str = "", state: str = "", error: str
 
 @router.get("/logout")
 async def logout(request: Request) -> Response:
-    """Clear the server-side session and redirect to /.
+    """Clear the local session and redirect to Credenza /logout.
 
     In anonymous mode, clears the anonymous session cookie and returns to /.
-    In normal mode, also revokes the Credenza bearer token (RFC 7009).
+    In normal mode, clears the local session store entry and redirects the
+    browser to Credenza's /logout endpoint, which revokes the token, clears
+    the Credenza session cookie, and triggers the IDP logout redirect.
     """
     settings: Settings = request.app.state.settings
     store = request.app.state.store
@@ -354,8 +358,8 @@ async def logout(request: Request) -> Response:
             if session is not None:
                 audit_event("logout", user_id=session.user_id)
                 await store.delete(user_session_key(session.user_id))
-        response = RedirectResponse("/", status_code=302)
-        response.delete_cookie(ANON_COOKIE_NAME, path="/", httponly=True, samesite="lax")
+        response = RedirectResponse(f"{settings.public_url}/", status_code=302)
+        response.delete_cookie(ANON_COOKIE_NAME, path=f"{settings.public_url}/", httponly=True, samesite="lax")
         return response
 
     bearer_token = _get_session_id(request, settings)
@@ -366,21 +370,41 @@ async def logout(request: Request) -> Response:
             await store.delete(user_session_key(tok_entry.user_id))
         await store.delete(_token_key(bearer_token))
 
-        # Best-effort revocation -- per RFC 7009 the server always returns 200,
-        # so we fire and forget; a failure here does not block the local logout.
+    # Call Credenza /logout server-side with the bearer token so Credenza can
+    # identify the session, revoke the token, and return its IDP logout redirect.
+    # follow_redirects=False: we want the redirect URL, not the IDP page itself.
+    # Redirect the browser to that URL so the IDP end-session flow completes.
+    redirect_target = f"{settings.public_url}/"
+    if bearer_token:
         try:
-            revoke_url = f"{settings.credenza_url}/revoke"
             async with httpx.AsyncClient() as client:
-                await client.post(
-                    revoke_url,
-                    data={"token": bearer_token, "client_id": settings.client_id},
+                resp = await client.get(
+                    f"{settings.credenza_url}/logout",
+                    headers={"Authorization": f"Bearer {bearer_token}"},
+                    follow_redirects=False,
                     timeout=5,
                 )
-            logger.debug("Token revoked at %s", revoke_url)
+            if resp.status_code in (301, 302, 303, 307, 308):
+                # Standard mode: Credenza returns a redirect directly to the IDP
+                location = resp.headers.get("location")
+                if location:
+                    redirect_target = location
+                    logger.debug("Credenza logout redirect: %s", location)
+            elif resp.status_code == 200:
+                # Legacy API mode: Credenza returns {"logout_url": "..."}
+                try:
+                    logout_url = resp.json().get("logout_url")
+                    if logout_url:
+                        redirect_target = logout_url
+                        logger.debug("Credenza logout_url (legacy): %s", logout_url)
+                except Exception:
+                    pass
+            else:
+                logger.warning("Credenza /logout returned unexpected status %d", resp.status_code)
         except Exception as exc:
-            logger.warning("Token revocation failed (non-fatal): %s", exc)
+            logger.warning("Credenza logout call failed (non-fatal): %s", exc)
 
-    response = RedirectResponse(f"{settings.public_url}/", status_code=302)
+    response = RedirectResponse(redirect_target, status_code=302)
     _clear_session_cookie(response)
     return response
 
@@ -430,10 +454,7 @@ async def _fetch_credenza_session(bearer_token: str, settings: Settings) -> dict
     """
     session_url = f"{settings.credenza_url}/session"
     async with httpx.AsyncClient() as client:
-        resp = await client.get(
-            session_url,
-            headers={"Authorization": f"Bearer {bearer_token}"},
-        )
+        resp = await client.get(session_url, headers={"Authorization": f"Bearer {bearer_token}"})
     if resp.status_code != 200:
         return {}
     return resp.json()

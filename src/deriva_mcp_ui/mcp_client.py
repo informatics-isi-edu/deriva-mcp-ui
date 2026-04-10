@@ -2,7 +2,7 @@
 
 Provides public coroutines used by the chat layer:
 
-    list_tools(bearer_token, mcp_url) -> list[AnthropicTool]
+    list_tools(bearer_token, mcp_url) -> list[LLMTool]
     call_tool(bearer_token, name, arguments, mcp_url) -> str
     get_prompt(bearer_token, name, mcp_url) -> str
     open_session(bearer_token, mcp_url) -> async context manager
@@ -34,8 +34,8 @@ from mcp.types import TextContent
 
 logger = logging.getLogger(__name__)
 
-# Type alias matching what the Anthropic SDK expects for tool definitions
-AnthropicTool = dict[str, Any]
+# Type alias for tool definitions in OpenAI function-calling format
+LLMTool = dict[str, Any]
 
 
 # ---------------------------------------------------------------------------
@@ -102,13 +102,13 @@ async def open_session(bearer_token: str | None, mcp_url: str):
 # ---------------------------------------------------------------------------
 
 
-def _slim_input_schema(schema: dict[str, Any]) -> dict[str, Any]:
-    """Strip per-property description and title fields from an input_schema.
+def _slim_parameters(schema: dict[str, Any]) -> dict[str, Any]:
+    """Strip per-property description and title fields from a tool's parameters.
 
-    The Anthropic API accepts but does not require these fields.  Removing
-    them from every property definition cuts the fixed tool-list token cost
-    significantly (typically 30-50%) without affecting Claude's ability to
-    call the tools correctly.
+    LLMs accept but do not require these fields.  Removing them from every
+    property definition cuts the fixed tool-list token cost significantly
+    (typically 30-50%) without affecting the model's ability to call the
+    tools correctly.
 
     Top-level schema fields (type, required, description, title) are kept
     intact -- only per-property fields inside 'properties' are trimmed.
@@ -132,13 +132,13 @@ async def list_tools(
     mcp_url: str,
     *,
     session: ClientSession | None = None,
-) -> list[AnthropicTool]:
-    """Return the MCP server's tool list in Anthropic schema format.
+) -> list[LLMTool]:
+    """Return the MCP server's tool list in OpenAI function-calling format.
 
-    MCP uses camelCase 'inputSchema'; Anthropic expects 'input_schema'.
-    Per-property description and title fields are stripped from each tool's
-    input_schema to reduce the fixed token cost of including the tool list
-    in every API call.
+    MCP uses camelCase 'inputSchema'; the OpenAI format uses
+    'function.parameters'. Per-property description and title fields are
+    stripped from each tool's parameters to reduce the fixed token cost of
+    including the tool list in every API call.
 
     Pass an existing ``session`` (from open_session) to avoid opening a new
     connection.
@@ -149,15 +149,15 @@ async def list_tools(
         async with _connect(mcp_url, bearer_token) as sess:
             result = await sess.list_tools()
 
-    tools: list[AnthropicTool] = []
+    tools: list[LLMTool] = []
     for tool in result.tools:
-        entry: AnthropicTool = {
+        func: dict[str, Any] = {
             "name": tool.name,
-            "input_schema": _slim_input_schema(tool.inputSchema if tool.inputSchema is not None else {})
+            "parameters": _slim_parameters(tool.inputSchema if tool.inputSchema is not None else {}),
         }
         if tool.description:
-            entry["description"] = tool.description
-        tools.append(entry)
+            func["description"] = tool.description
+        tools.append({"type": "function", "function": func})
 
     logger.debug("list_tools: %d tools from %s", len(tools), mcp_url)
     return tools
@@ -213,7 +213,7 @@ async def call_tool(
     the chat layer always receives a plain string.
 
     If the tool result carries isError=True the returned string is prefixed
-    with 'Error: ' so Claude can report it clearly.
+    with 'Error: ' so the LLM can report it clearly.
 
     Pass an existing ``session`` (from open_session) to avoid opening a new
     connection.

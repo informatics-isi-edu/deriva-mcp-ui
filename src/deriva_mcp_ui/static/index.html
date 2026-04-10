@@ -58,6 +58,18 @@
     #logout-link { color: #a8c4e8; text-decoration: none; }
     #logout-link:hover { text-decoration: underline; }
 
+    /* ---- Search-mode banner ---- */
+    #search-mode-banner {
+      background: #eef6ff;
+      border-bottom: 1px solid #b8d0ed;
+      color: #1e3a5f;
+      font-size: 0.82rem;
+      padding: 0.35rem 1.25rem;
+      text-align: center;
+      display: none;
+      flex-shrink: 0;
+    }
+
     /* ---- Catalog context bar (general-purpose mode) ---- */
     #catalog-bar {
       background: #fff;
@@ -135,6 +147,25 @@
     }
     .msg-assistant th, .msg-assistant td { border: 1px solid #ccc; padding: 0.3rem 0.6rem; }
     .msg-assistant th { background: #f0f0f0; }
+    /* RAG source headings -- h4 used for per-source section labels */
+    .msg-assistant h4 {
+      font-size: 1.05em;
+      font-weight: normal;
+      font-style: italic;
+      color: #444;
+      margin: 0.9rem 0 0.2rem 0;
+      padding: 0;
+      border: none;
+    }
+    .msg-assistant h4:first-child { margin-top: 0; }
+    /* Consecutive h4 headings (framing + count + source label) group tightly */
+    .msg-assistant h4 + h4 { margin-top: 0.15rem; }
+    /* RAG footer (show-more note) separator */
+    .msg-assistant hr {
+      border: none;
+      border-top: 1px solid #c8cfd8;
+      margin: 0.8rem 0 0.4rem 0;
+    }
 
     /* ---- Status indicator (shown during first-turn priming) ---- */
     .msg-status {
@@ -312,6 +343,8 @@
     <a id="logout-link" href="logout">Log out</a>
   </div>
 </div>
+
+<div id="search-mode-banner">Running in search mode -- responses are based on indexed documentation</div>
 
 <div id="catalog-bar">
   <label>Hostname <input id="gp-hostname" type="text" placeholder="e.g. facebase.org"></label>

@@ -209,16 +209,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if not s.auth_enabled
             else (_extract_display_name(cred) or session.user_id)
         )
-        full_name = (
-            cred.get("full_name")
-            or client_block.get("full_name")
-            or ""
-        )
-        email = (
-            cred.get("email")
-            or client_block.get("email")
-            or ""
-        )
+        full_name = cred.get("full_name") or client_block.get("full_name") or ""
+        email = cred.get("email") or client_block.get("email") or ""
         return JSONResponse(
             {
                 "user_id": session.user_id,
@@ -226,6 +218,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "full_name": full_name,
                 "email": email,
                 "catalog_mode": "default" if s.default_catalog_mode else "general",
+                "operating_mode": s.operating_tier,
                 "label": s.default_catalog_label or s.default_hostname or "",
                 "hostname": s.default_hostname or "",
                 "credenza_session": cred,
@@ -240,32 +233,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             role = msg.get("role")
             content = msg.get("content", "")
             if role == "user":
-                # Plain text user messages only -- skip tool_result continuations
                 if isinstance(content, str):
                     messages.append({"role": "user", "content": content})
             elif role == "assistant":
-                # Extract text blocks, note tool calls by name
-                if isinstance(content, list):
-                    text_parts = []
-                    tool_names = []
-                    for block in content:
-                        if block.get("type") == "text":
-                            text_parts.append(block["text"])
-                        elif block.get("type") == "tool_use":
-                            tool_names.append(block.get("name", ""))
-                    if text_parts:
-                        messages.append({"role": "assistant", "content": "\n\n".join(text_parts)})
-                    if tool_names:
-                        messages.append({"role": "tool_use", "tools": tool_names})
-                elif isinstance(content, str) and content:
+                # OpenAI format: content is a string, tool_calls is a separate list
+                tool_calls = msg.get("tool_calls") or []
+                if isinstance(content, str) and content:
                     messages.append({"role": "assistant", "content": content})
-        return JSONResponse({"messages": messages})
+                if tool_calls:
+                    tool_names = [
+                        tc.get("function", {}).get("name", "")
+                        for tc in tool_calls
+                    ]
+                    messages.append({"role": "tool_use", "tools": tool_names})
+        return JSONResponse({"messages": messages, "input_history": session.input_history})
 
     @app.delete("/history")
     async def clear_history(session: RequireSession, request: Request):  # type: ignore[misc]
         """Clear conversation history for the current user."""
         store = request.app.state.store
         session.history = []
+        session.input_history = []
         session.tools = None
         session.schema_primed = False
         session.primed_schema = ""
@@ -292,6 +280,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             session.gp_hostname = body.hostname
         if body.catalog_id:
             session.gp_catalog_id = body.catalog_id
+
+        # Append to server-side input history (dedup consecutive; cap at 200).
+        if not session.input_history or session.input_history[-1] != body.message:
+            session.input_history.append(body.message)
+            if len(session.input_history) > 200:
+                session.input_history = session.input_history[-200:]
 
         audit_event("chat_request", user_id=session.user_id, msg_len=len(body.message))
         t0 = time.monotonic()
@@ -339,7 +333,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 await store.set(user_session_key(session.user_id), session)
                 # Persist full (untrimmed) history with longer TTL so it survives session expiry
                 full = getattr(session, "full_history", session.history)
-                hist_session = Session(user_id=session.user_id, history=full)
+                hist_session = Session(user_id=session.user_id, history=full, input_history=session.input_history)
                 await store.set(history_key(session.user_id), hist_session, ttl=s.history_ttl)
             yield "event: done\ndata: {}\n\n"
 

@@ -27,7 +27,7 @@ def _test_settings(**kwargs) -> Settings:
         client_id="test-client",
         mcp_resource="https://mcp.example.org",
         public_url="https://chatbot.example.org",
-        anthropic_api_key="sk-ant-test",
+        llm_api_key="sk-test",
     )
     base.update(kwargs)
     return Settings(**base)
@@ -270,10 +270,15 @@ async def test_logout_clears_session(app_and_store):
         Session(user_id="alice", bearer_token=bearer, created_at=now, last_active=now),
     )
 
-    from unittest.mock import AsyncMock, patch
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    mock_response = MagicMock()
+    mock_response.status_code = 302
+    mock_response.headers = {"location": "https://idp.example.com/logout?post_logout_redirect_uri=https://app/"}
 
     with patch("deriva_mcp_ui.auth.httpx.AsyncClient") as mock_cls:
         mock_http = AsyncMock()
+        mock_http.get = AsyncMock(return_value=mock_response)
         mock_cls.return_value.__aenter__ = AsyncMock(return_value=mock_http)
         mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
 
@@ -281,11 +286,46 @@ async def test_logout_clears_session(app_and_store):
         resp = client.get("/logout", cookies={"deriva_chatbot_session": bearer})
 
     assert resp.status_code == 302
-    mock_http.post.assert_called_once()
-    assert mock_http.post.call_args.kwargs["data"]["token"] == bearer
+    # Credenza logout called with bearer token in Authorization header
+    call_kwargs = mock_http.get.call_args
+    assert call_kwargs.kwargs["headers"]["Authorization"] == f"Bearer {bearer}"
+    assert call_kwargs.kwargs["follow_redirects"] is False
+    # Browser redirected to IDP logout URL from Credenza's Location header
+    assert resp.headers["location"] == "https://idp.example.com/logout?post_logout_redirect_uri=https://app/"
 
     assert await store.get(user_session_key("alice")) is None
     assert await store.get(_token_key(bearer)) is None
+
+
+@pytest.mark.asyncio
+async def test_logout_handles_credenza_legacy_mode(app_and_store):
+    """Legacy Credenza returns 200 + {logout_url: ...}; browser is redirected there."""
+    app, store = app_and_store
+
+    bearer = "tok-legacy-logout"
+    now = time.time()
+    await store.set(user_session_key("legacy-user"), Session(user_id="legacy-user", bearer_token=bearer, created_at=now, last_active=now))
+    await store.set(_token_key(bearer), Session(user_id="legacy-user", bearer_token=bearer, created_at=now, last_active=now))
+
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.headers = {}
+    mock_response.json = MagicMock(return_value={"logout_url": "https://idp.example.com/logout"})
+
+    with patch("deriva_mcp_ui.auth.httpx.AsyncClient") as mock_cls:
+        mock_http = AsyncMock()
+        mock_http.get = AsyncMock(return_value=mock_response)
+        mock_cls.return_value.__aenter__ = AsyncMock(return_value=mock_http)
+        mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        client = TestClient(app, follow_redirects=False)
+        resp = client.get("/logout", cookies={"deriva_chatbot_session": bearer})
+
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "https://idp.example.com/logout"
+    assert await store.get(user_session_key("legacy-user")) is None
 
 
 # ---------------------------------------------------------------------------
@@ -452,7 +492,7 @@ def anon_app_and_store():
     # No credenza_url -> anonymous mode (auth_enabled=False)
     settings = Settings(
         mcp_url="http://mcp:8000",
-        anthropic_api_key="sk-ant-test",
+        llm_api_key="sk-test",
     )
     app = create_app(settings)
     store = MemorySessionStore(ttl=settings.session_ttl)
@@ -526,7 +566,7 @@ def test_config_no_credenza_url_skips_credenza_validation():
     """No credenza_url: validate_for_http() does not require Credenza fields."""
     s = Settings(
         mcp_url="http://mcp:8000",
-        anthropic_api_key="sk-ant-test",
+        llm_api_key="sk-test",
     )
     s.validate_for_http()  # must not raise
 
@@ -535,7 +575,7 @@ def test_config_with_credenza_url_requires_full_config():
     """credenza_url set: validate_for_http() raises when other Credenza fields are missing."""
     s = Settings(
         mcp_url="http://mcp:8000",
-        anthropic_api_key="sk-ant-test",
+        llm_api_key="sk-test",
         credenza_url="https://credenza.example.org",
     )
     with pytest.raises(ValueError, match="DERIVA_CHATBOT_CLIENT_ID"):
@@ -543,35 +583,28 @@ def test_config_with_credenza_url_requires_full_config():
 
 
 @pytest.mark.asyncio
-async def test_logout_revocation_failure_is_nonfatal(app_and_store):
-    """Token revocation HTTP error is logged but logout still completes (lines 292-293)."""
+async def test_logout_falls_back_to_public_url_on_credenza_failure(app_and_store):
+    """If Credenza /logout call fails, browser is redirected to public_url/."""
     app, store = app_and_store
 
-    bearer = "tok-revoke-fail"
+    bearer = "tok-credenza-fail"
     now = time.time()
-    session = Session(user_id="dave", bearer_token=bearer, created_at=now, last_active=now)
-    await store.set(user_session_key("dave"), session)
-    await store.set(
-        _token_key(bearer),
-        Session(user_id="dave", bearer_token=bearer, created_at=now, last_active=now),
-    )
+    await store.set(user_session_key("dave"), Session(user_id="dave", bearer_token=bearer, created_at=now, last_active=now))
+    await store.set(_token_key(bearer), Session(user_id="dave", bearer_token=bearer, created_at=now, last_active=now))
 
     from unittest.mock import AsyncMock, patch
 
-    async def _raise(*a, **kw):
-        raise Exception("revocation server down")
-
     with patch("deriva_mcp_ui.auth.httpx.AsyncClient") as mock_cls:
-        mock_http = MagicMock()
+        mock_http = AsyncMock()
+        mock_http.get = AsyncMock(side_effect=Exception("credenza down"))
         mock_cls.return_value.__aenter__ = AsyncMock(return_value=mock_http)
         mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
-        mock_http.post = _raise
 
         client = TestClient(app, follow_redirects=False)
         resp = client.get("/logout", cookies={"deriva_chatbot_session": bearer})
 
-    # Logout must succeed despite revocation failure
     assert resp.status_code == 302
+    assert resp.headers["location"].endswith("/")
     assert await store.get(user_session_key("dave")) is None
 
 
@@ -594,16 +627,11 @@ async def test_history_endpoint_returns_messages(app_and_store):
         last_active=now,
         history=[
             {"role": "user", "content": "hello"},
-            {"role": "assistant", "content": [
-                {"type": "text", "text": "Hi there!"},
-                {"type": "tool_use", "id": "t1", "name": "get_schema", "input": {}},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "t1", "type": "function", "function": {"name": "get_schema", "arguments": "{}"}},
             ]},
-            {"role": "user", "content": [
-                {"type": "tool_result", "tool_use_id": "t1", "content": "schema data"},
-            ]},
-            {"role": "assistant", "content": [
-                {"type": "text", "text": "Here is the schema."},
-            ]},
+            {"role": "tool", "tool_call_id": "t1", "content": "schema data"},
+            {"role": "assistant", "content": "Here is the schema."},
         ],
     )
     await store.set(user_session_key("eve"), session)
@@ -614,13 +642,11 @@ async def test_history_endpoint_returns_messages(app_and_store):
     assert resp.status_code == 200
     messages = resp.json()["messages"]
 
-    # Should have: user text, assistant text + tool_use, assistant text
+    # Should have: tool_use summary, assistant text
     assert messages[0] == {"role": "user", "content": "hello"}
-    assert messages[1] == {"role": "assistant", "content": "Hi there!"}
-    assert messages[2] == {"role": "tool_use", "tools": ["get_schema"]}
-    # tool_result continuation should be skipped
-    assert messages[3] == {"role": "assistant", "content": "Here is the schema."}
-    assert len(messages) == 4
+    assert messages[1] == {"role": "tool_use", "tools": ["get_schema"]}
+    assert messages[2] == {"role": "assistant", "content": "Here is the schema."}
+    assert len(messages) == 3
 
 
 @pytest.mark.asyncio

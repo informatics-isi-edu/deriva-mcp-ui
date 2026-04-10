@@ -21,7 +21,7 @@ def _test_settings(**kwargs) -> Settings:
         client_id="test-client",
         mcp_resource="https://mcp.example.org",
         public_url="https://chatbot.example.org",
-        anthropic_api_key="sk-ant-test",
+        llm_api_key="sk-test",
     )
     base.update(kwargs)
     return Settings(**base)
@@ -129,7 +129,7 @@ def test_session_info_includes_identity_fields():
 
 
 def test_session_info_anonymous_mode():
-    settings = Settings(mcp_url="http://mcp", anthropic_api_key="sk-ant-test")
+    settings = Settings(mcp_url="http://mcp", llm_api_key="sk-test")
     app = create_app(settings)
     store = MemorySessionStore(ttl=settings.session_ttl)
     app.state.store = store
@@ -145,6 +145,38 @@ def test_session_info_anonymous_mode():
     assert data["full_name"] == ""
     assert data["email"] == ""
     assert data["hostname"] == ""
+
+
+def test_session_info_includes_operating_mode():
+    settings = _test_settings()
+    app = create_app(settings)
+    store = MemorySessionStore(ttl=settings.session_ttl)
+    app.state.store = store
+
+    now = time.time()
+    session = Session(user_id="alice", bearer_token="tok", created_at=now, last_active=now)
+    app.dependency_overrides[require_session] = lambda: session
+
+    client = TestClient(app)
+    resp = client.get("/session-info")
+    data = resp.json()
+    assert data["operating_mode"] == "llm"
+
+
+def test_session_info_operating_mode_rag_only():
+    settings = Settings(mcp_url="http://mcp", mode="rag_only")
+    app = create_app(settings)
+    store = MemorySessionStore(ttl=settings.session_ttl)
+    app.state.store = store
+
+    now = time.time()
+    session = Session(user_id="anon", created_at=now, last_active=now)
+    app.dependency_overrides[require_session] = lambda: session
+
+    client = TestClient(app)
+    resp = client.get("/session-info")
+    data = resp.json()
+    assert data["operating_mode"] == "rag_only"
 
 
 # ---------------------------------------------------------------------------
@@ -176,32 +208,33 @@ def test_get_history_empty(app_with_session):
     client = TestClient(app)
     resp = client.get("/history")
     assert resp.status_code == 200
-    assert resp.json() == {"messages": []}
+    assert resp.json() == {"messages": [], "input_history": []}
 
 
 def test_get_history_extracts_messages(app_with_session):
+    """History endpoint extracts text and tool calls from OpenAI-format messages."""
     app, _, session = app_with_session
     session.history = [
         {"role": "user", "content": "hello"},
         {
             "role": "assistant",
-            "content": [
-                {"type": "text", "text": "Hi there!"},
-                {"type": "tool_use", "name": "get_schema"},
+            "content": None,
+            "tool_calls": [
+                {"id": "tc1", "type": "function", "function": {"name": "get_schema", "arguments": "{}"}},
             ],
         },
-        {"role": "assistant", "content": "plain response"},
+        {"role": "tool", "tool_call_id": "tc1", "content": "schema data"},
+        {"role": "assistant", "content": "Here is the schema."},
         # tool_result user messages (non-string content) should be skipped
         {"role": "user", "content": [{"type": "tool_result", "content": "..."}]},
     ]
     client = TestClient(app)
     resp = client.get("/history")
     messages = resp.json()["messages"]
-    assert len(messages) == 4
+    assert len(messages) == 3
     assert messages[0] == {"role": "user", "content": "hello"}
-    assert messages[1] == {"role": "assistant", "content": "Hi there!"}
-    assert messages[2] == {"role": "tool_use", "tools": ["get_schema"]}
-    assert messages[3] == {"role": "assistant", "content": "plain response"}
+    assert messages[1] == {"role": "tool_use", "tools": ["get_schema"]}
+    assert messages[2] == {"role": "assistant", "content": "Here is the schema."}
 
 
 def test_clear_history(app_with_session):
