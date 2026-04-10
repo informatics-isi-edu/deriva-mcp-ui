@@ -17,6 +17,7 @@ class Session:
     # email, groups, and any other identity fields the UI may need.
     credenza_session: dict[str, Any] = field(default_factory=dict)
     history: list[dict[str, Any]] = field(default_factory=list)
+    input_history: list[str] = field(default_factory=list)
     tools: list[dict[str, Any]] | None = None
     created_at: float = 0.0
     last_active: float = 0.0
@@ -37,6 +38,7 @@ class Session:
                 "bearer_token": self.bearer_token,
                 "credenza_session": self.credenza_session,
                 "history": self.history,
+                "input_history": self.input_history,
                 "tools": self.tools,
                 "created_at": self.created_at,
                 "last_active": self.last_active,
@@ -57,6 +59,7 @@ class Session:
             bearer_token=d["bearer_token"],
             credenza_session=d.get("credenza_session", {}),
             history=d.get("history", []),
+            input_history=d.get("input_history", []),
             tools=d.get("tools"),
             created_at=d.get("created_at", 0.0),
             last_active=d.get("last_active", 0.0),

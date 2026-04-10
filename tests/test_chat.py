@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import time
-from collections.abc import AsyncIterator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -13,7 +13,10 @@ import pytest
 
 from deriva_mcp_ui.chat import (
     ChatCancelled,
+    _extract_key_terms,
     _fetch_guides,
+    _format_rag_response,
+    _merge_rag_results,
     _prime_ermrest_syntax,
     _prime_schema,
     run_chat_turn,
@@ -42,8 +45,8 @@ def _settings(**kw) -> Settings:
         client_id="cid",
         mcp_resource="https://mcp.example.org",
         public_url="https://chatbot.example.org",
-        anthropic_api_key="sk-ant-test",
-        claude_model="claude-sonnet-4-6",
+        llm_api_key="sk-test",
+        llm_model="claude-sonnet-4-6",
         max_history_turns=5,
     )
     base.update(kw)
@@ -57,32 +60,9 @@ def _session(schema_primed: bool = True) -> Session:
     return sess
 
 
-def _tool_block(tool_id: str, name: str, inp: dict) -> MagicMock:
-    b = MagicMock()
-    b.type = "tool_use"
-    b.id = tool_id
-    b.name = name
-    b.input = inp
-    return b
-
-
-def _text_block(text: str) -> MagicMock:
-    b = MagicMock()
-    b.type = "text"
-    b.model_dump.return_value = {"type": "text", "text": text}
-    return b
-
-
-def _final_message(content: list, stop_reason: str = "end_turn") -> MagicMock:
-    msg = MagicMock()
-    msg.stop_reason = stop_reason
-    msg.content = content
-    return msg
-
-
-async def _text_chunks(chunks: list[str]) -> AsyncIterator[str]:
-    for chunk in chunks:
-        yield chunk
+def _openai_tool(name: str) -> dict[str, Any]:
+    """Return a tool definition in OpenAI function-calling format."""
+    return {"type": "function", "function": {"name": name, "parameters": {}}}
 
 
 def _collect_text(events: list[dict]) -> str:
@@ -95,13 +75,68 @@ def _collect_tool_events(events: list[dict]) -> list[dict]:
     return [e for e in events if e.get("type") in ("tool_start", "tool_end")]
 
 
-@contextlib.asynccontextmanager
-async def _mock_stream(text_chunks: list[str], final_message: Any):
-    """Fake anthropic streaming context manager."""
-    stream = MagicMock()
-    stream.text_stream = _text_chunks(text_chunks)
-    stream.get_final_message = AsyncMock(return_value=final_message)
-    yield stream
+# ---------------------------------------------------------------------------
+# LiteLLM streaming mock helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_chunk(
+    content: str | None = None,
+    tool_calls: list[dict] | None = None,
+    finish_reason: str | None = None,
+) -> MagicMock:
+    """Build a mock LiteLLM streaming chunk."""
+    delta = MagicMock()
+    delta.content = content
+    delta.tool_calls = tool_calls
+    chunk = MagicMock()
+    chunk.choices = [MagicMock()]
+    chunk.choices[0].delta = delta
+    chunk.choices[0].finish_reason = finish_reason
+    return chunk
+
+
+def _make_tool_call_delta(index: int, tc_id: str | None, name: str | None, arguments: str) -> MagicMock:
+    """Build a mock tool call delta for streaming."""
+    tc = MagicMock()
+    tc.index = index
+    tc.id = tc_id
+    func = MagicMock()
+    func.name = name
+    func.arguments = arguments
+    tc.function = func
+    return tc
+
+
+async def _async_iter(items):
+    """Turn a list into an async iterator (simulates LiteLLM streaming)."""
+    for item in items:
+        yield item
+
+
+def _text_stream(text_chunks: list[str], finish_reason: str = "stop"):
+    """Build a stream of text chunks ending with the given finish_reason."""
+    chunks = [_make_chunk(content=t) for t in text_chunks]
+    if chunks:
+        chunks[-1] = _make_chunk(content=text_chunks[-1], finish_reason=finish_reason)
+    else:
+        chunks.append(_make_chunk(finish_reason=finish_reason))
+    return _async_iter(chunks)
+
+
+def _tool_call_stream(tool_calls_data: list[dict], finish_reason: str = "tool_calls"):
+    """Build a stream with tool call deltas.
+
+    tool_calls_data: list of {"id": str, "name": str, "arguments": str}
+    """
+    chunks = []
+    for i, tc in enumerate(tool_calls_data):
+        # First chunk: id + name + start of arguments
+        tc_delta = _make_tool_call_delta(i, tc["id"], tc["name"], tc["arguments"])
+        chunks.append(_make_chunk(tool_calls=[tc_delta]))
+    # Final chunk with finish_reason
+    chunks.append(_make_chunk(finish_reason=finish_reason))
+    return _async_iter(chunks)
 
 
 # ---------------------------------------------------------------------------
@@ -140,94 +175,77 @@ def test_system_prompt_default_catalog_uses_hostname_when_no_label():
 
 
 def test_trim_history_under_limit():
-    msgs = [{"role": "user"}, {"role": "assistant"}] * 3
+    msgs = [
+        {"role": "user", "content": "q1"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "user", "content": "q2"},
+        {"role": "assistant", "content": "a2"},
+    ]
     assert trim_history(msgs, max_turns=5) == msgs
 
 
 def test_trim_history_at_limit():
-    msgs = [{"role": "user"}, {"role": "assistant"}] * 5
-    assert trim_history(msgs, max_turns=5) == msgs
+    msgs = [
+        {"role": "user", "content": "q1"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "user", "content": "q2"},
+        {"role": "assistant", "content": "a2"},
+    ]
+    assert trim_history(msgs, max_turns=2) == msgs
 
 
 def test_trim_history_over_limit():
-    msgs = [{"role": "user", "content": str(i)} for i in range(12)]
-    # Alternate user/assistant
-    for i, m in enumerate(msgs):
-        m["role"] = "user" if i % 2 == 0 else "assistant"
-    result = trim_history(msgs, max_turns=4)
-    assert len(result) <= 8
+    msgs = [
+        {"role": "user", "content": "q1"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "user", "content": "q2"},
+        {"role": "assistant", "content": "a2"},
+        {"role": "user", "content": "q3"},
+        {"role": "assistant", "content": "a3"},
+    ]
+    result = trim_history(msgs, max_turns=2)
     assert result[0]["role"] == "user"
+    assert result[0]["content"] == "q2"
+    assert len([m for m in result if m["role"] == "user"]) == 2
 
 
 def test_trim_history_starts_on_user():
-    # Even if slicing would land on an assistant message, result must start with user
-    msgs = []
-    for i in range(10):
-        msgs.append({"role": "user", "content": f"u{i}"})
-        msgs.append({"role": "assistant", "content": f"a{i}"})
-    result = trim_history(msgs, max_turns=3)
-    assert result[0]["role"] == "user"
-
-
-def test_trim_history_skips_orphaned_tool_result():
-    """Slicing must not leave a tool_result block whose tool_use was trimmed away.
-
-    Actual conversation pattern:
-      user_A -> assistant_with_tool_use -> tool_result_user -> assistant_after_tools
-             -> plain_user -> assistant_reply
-
-    With max_turns=2 (limit=4), slicing gives:
-      [tool_result_user, assistant_after_tools, plain_user, assistant_reply]
-
-    tail[0] is tool_result_user whose tool_use was trimmed -- must skip it and
-    the following assistant reply, landing on [plain_user, assistant_reply].
-    """
-    tool_result_user = {
-        "role": "user",
-        "content": [{"type": "tool_result", "tool_use_id": "toolu_123", "content": "ok"}],
-    }
-    assistant_after_tools = {"role": "assistant", "content": [{"type": "text", "text": "done"}]}
-    plain_user = {"role": "user", "content": "next question"}
-    assistant_reply = {"role": "assistant", "content": [{"type": "text", "text": "answer"}]}
-
     msgs = [
-        {"role": "user", "content": "first question"},
-        {
-            "role": "assistant",
-            "content": [{"type": "tool_use", "id": "toolu_123", "name": "get_schema", "input": {}}],
-        },
-        tool_result_user,  # orphaned if trim starts here
-        assistant_after_tools,
-        plain_user,
-        assistant_reply,
+        {"role": "user", "content": "q1"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "user", "content": "q2"},
+        {"role": "assistant", "content": "a2"},
+        {"role": "user", "content": "q3"},
+        {"role": "assistant", "content": "a3"},
     ]
-    # max_turns=2 -> limit=4 -> tail = [tool_result_user, assistant_after_tools, plain_user, assistant_reply]
-    # while loop skips tool_result_user + assistant_after_tools (tail[2:]) -> [plain_user, assistant_reply]
-    result = trim_history(msgs, max_turns=2)
-    assert result == [plain_user, assistant_reply]
-    assert result[0]["role"] == "user"
-    # no tool_result blocks in result
-    for msg in result:
-        content = msg.get("content")
-        if isinstance(content, list):
-            assert not any(b.get("type") == "tool_result" for b in content)
-
-
-def test_trim_history_orphaned_tool_result_at_exact_limit():
-    """When the tail begins on an assistant message (odd slice), advance past it too."""
-    # Simulate: slice starts on an assistant message, not a tool_result user msg.
-    plain_user = {"role": "user", "content": "hello"}
-    assistant_reply = {"role": "assistant", "content": [{"type": "text", "text": "hi"}]}
-
-    msgs = [
-        {"role": "assistant", "content": [{"type": "text", "text": "stale"}]},
-        plain_user,
-        assistant_reply,
-    ]
-    # limit=2: tail = [assistant_stale, plain_user] -- starts on assistant, skip it
     result = trim_history(msgs, max_turns=1)
     assert result[0]["role"] == "user"
-    assert result[0] == plain_user
+    assert result[0]["content"] == "q3"
+
+
+def test_trim_history_preserves_tool_sequence():
+    """A tool-calling sequence (assistant + tool messages) is kept intact."""
+    msgs = [
+        {"role": "user", "content": "q1"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "user", "content": "q2"},
+        {"role": "assistant", "content": None, "tool_calls": [
+            {"id": "tc1", "type": "function", "function": {"name": "get_schema", "arguments": "{}"}}
+        ]},
+        {"role": "tool", "tool_call_id": "tc1", "content": "schema data"},
+        {"role": "assistant", "content": "Here is the schema."},
+        {"role": "user", "content": "q3"},
+        {"role": "assistant", "content": "a3"},
+    ]
+    result = trim_history(msgs, max_turns=2)
+    # Should keep from q2 onward (q2 is the second-to-last user message)
+    assert result[0]["role"] == "user"
+    assert result[0]["content"] == "q2"
+    assert len(result) == 6  # q2 + assistant(tool_calls) + tool + assistant + q3 + a3
+
+
+def test_trim_history_empty():
+    assert trim_history([], max_turns=5) == []
 
 
 # ---------------------------------------------------------------------------
@@ -238,21 +256,21 @@ def test_trim_history_orphaned_tool_result_at_exact_limit():
 async def test_run_chat_turn_no_tools_yields_text():
     s = _settings()
     sess = _session()
-    sess.tools = [{"name": "get_entities", "input_schema": {}}]
+    sess.tools = [_openai_tool("get_entities")]
 
-    final = _final_message([_text_block("Hello from Claude")], stop_reason="end_turn")
-
-    with patch("deriva_mcp_ui.chat.anthropic.AsyncAnthropic") as mock_cls:
-        mock_client = MagicMock()
-        mock_cls.return_value = mock_client
-        mock_client.messages.stream.return_value = _mock_stream(["Hello ", "from Claude"], final)
+    with patch("deriva_mcp_ui.chat.litellm") as mock_litellm:
+        mock_litellm.acompletion = AsyncMock(
+            return_value=_text_stream(["Hello ", "from LLM"])
+        )
+        mock_litellm.RateLimitError = litellm_rate_limit_error()
+        mock_litellm.ServiceUnavailableError = litellm_service_unavailable_error()
 
         chunks = []
         async for chunk in run_chat_turn("hi", sess, s):
             chunks.append(chunk)
 
-    assert _collect_text(chunks) == "Hello from Claude"
-    # History updated
+    assert _collect_text(chunks) == "Hello from LLM"
+    # History updated: user + assistant
     assert len(sess.history) == 2
     assert sess.history[0] == {"role": "user", "content": "hi"}
     assert sess.history[1]["role"] == "assistant"
@@ -263,15 +281,16 @@ async def test_run_chat_turn_fetches_tools_when_none():
     sess = _session()
     assert sess.tools is None
 
-    final = _final_message([_text_block("ok")], stop_reason="end_turn")
-    fake_tools = [{"name": "get_entities", "input_schema": {}}]
+    fake_tools = [_openai_tool("get_entities")]
 
     with patch("deriva_mcp_ui.chat.open_session", _mock_open_session):
         with patch("deriva_mcp_ui.chat.list_tools", AsyncMock(return_value=fake_tools)) as mock_lt:
-            with patch("deriva_mcp_ui.chat.anthropic.AsyncAnthropic") as mock_cls:
-                mock_client = MagicMock()
-                mock_cls.return_value = mock_client
-                mock_client.messages.stream.return_value = _mock_stream(["ok"], final)
+            with patch("deriva_mcp_ui.chat.litellm") as mock_litellm:
+                mock_litellm.acompletion = AsyncMock(
+                    return_value=_text_stream(["ok"])
+                )
+                mock_litellm.RateLimitError = litellm_rate_limit_error()
+                mock_litellm.ServiceUnavailableError = litellm_service_unavailable_error()
 
                 async for _ in run_chat_turn("hi", sess, s):
                     pass
@@ -288,40 +307,25 @@ async def test_run_chat_turn_fetches_tools_when_none():
 async def test_run_chat_turn_with_tool_call():
     s = _settings()
     sess = _session()
-    sess.tools = [{"name": "get_entities", "input_schema": {}}]
+    sess.tools = [_openai_tool("get_entities")]
 
-    tool_block = _tool_block("tid1", "get_entities", {"hostname": "h", "catalog_id": "1"})
-    tool_block.model_dump.return_value = {
-        "type": "tool_use",
-        "id": "tid1",
-        "name": "get_entities",
-        "input": {"hostname": "h", "catalog_id": "1"},
-    }
-
-    # First response: tool_use; second response: end_turn
-    final_tool = _final_message([tool_block], stop_reason="tool_use")
-    final_end = _final_message([_text_block("Done")], stop_reason="end_turn")
-
+    tc_args = json.dumps({"hostname": "h", "catalog_id": "1"})
     call_count = 0
 
-    @contextlib.asynccontextmanager
-    async def _stream_factory(*_a, **_kw):
+    async def _acompletion_side_effect(**_kw):
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            async with _mock_stream([], final_tool) as s_:
-                yield s_
-        else:
-            async with _mock_stream(["Done"], final_end) as s_:
-                yield s_
+            return _tool_call_stream([{"id": "tid1", "name": "get_entities", "arguments": tc_args}])
+        return _text_stream(["Done"])
 
     tool_result = "row1,row2"
 
     with patch("deriva_mcp_ui.chat.call_tool", AsyncMock(return_value=tool_result)) as mock_ct:
-        with patch("deriva_mcp_ui.chat.anthropic.AsyncAnthropic") as mock_cls:
-            mock_client = MagicMock()
-            mock_cls.return_value = mock_client
-            mock_client.messages.stream = _stream_factory
+        with patch("deriva_mcp_ui.chat.litellm") as mock_litellm:
+            mock_litellm.acompletion = AsyncMock(side_effect=_acompletion_side_effect)
+            mock_litellm.RateLimitError = litellm_rate_limit_error()
+            mock_litellm.ServiceUnavailableError = litellm_service_unavailable_error()
 
             chunks = []
             async for chunk in run_chat_turn("show me data", sess, s):
@@ -334,7 +338,7 @@ async def test_run_chat_turn_with_tool_call():
     tool_evts = _collect_tool_events(chunks)
     assert any(e["type"] == "tool_start" and e["name"] == "get_entities" for e in tool_evts)
     assert any(e["type"] == "tool_end" and e["name"] == "get_entities" for e in tool_evts)
-    # History should include user, assistant (tool_use), user (tool_result), assistant (end)
+    # History: user, assistant (tool_calls), tool, assistant (end)
     assert len(sess.history) == 4
 
 
@@ -342,34 +346,24 @@ async def test_run_chat_turn_yields_tool_events():
     """tool_start and tool_end events are always emitted for every tool call."""
     s = _settings()
     sess = _session()
-    sess.tools = [{"name": "get_entities", "input_schema": {}}]
+    sess.tools = [_openai_tool("get_entities")]
 
-    tool_block = _tool_block("tid-dbg", "get_entities", {"limit": 5})
-    tool_block.model_dump.return_value = {
-        "type": "tool_use",
-        "id": "tid-dbg",
-        "name": "get_entities",
-        "input": {"limit": 5},
-    }
-    final_tool = _final_message([tool_block], stop_reason="tool_use")
-    final_end = _final_message([_text_block("Done")], stop_reason="end_turn")
-
+    tc_args = json.dumps({"limit": 5})
     call_count = 0
 
-    @contextlib.asynccontextmanager
-    async def _stream_factory(*_a, **_kw):
+    async def _acompletion_side_effect(**_kw):
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            async with _mock_stream([], final_tool) as s_:
-                yield s_
-        else:
-            async with _mock_stream(["Done"], final_end) as s_:
-                yield s_
+            return _tool_call_stream([{"id": "tid-dbg", "name": "get_entities", "arguments": tc_args}])
+        return _text_stream(["Done"])
 
     with patch("deriva_mcp_ui.chat.call_tool", AsyncMock(return_value="row1,row2")):
-        with patch("deriva_mcp_ui.chat.anthropic.AsyncAnthropic") as mock_cls:
-            mock_cls.return_value.messages.stream = _stream_factory
+        with patch("deriva_mcp_ui.chat.litellm") as mock_litellm:
+            mock_litellm.acompletion = AsyncMock(side_effect=_acompletion_side_effect)
+            mock_litellm.RateLimitError = litellm_rate_limit_error()
+            mock_litellm.ServiceUnavailableError = litellm_service_unavailable_error()
+
             events = []
             async for event in run_chat_turn("hi", sess, s):
                 events.append(event)
@@ -392,22 +386,16 @@ async def test_run_chat_turn_yields_tool_events():
 async def test_run_chat_turn_mcp_auth_error_propagates():
     s = _settings()
     sess = _session()
-    sess.tools = [{"name": "tool", "input_schema": {}}]
+    sess.tools = [_openai_tool("tool")]
 
-    tool_block = _tool_block("tid", "tool", {})
-    tool_block.model_dump.return_value = {
-        "type": "tool_use",
-        "id": "tid",
-        "name": "tool",
-        "input": {},
-    }
-    final_tool = _final_message([tool_block], stop_reason="tool_use")
-
+    tc_args = json.dumps({})
     with patch("deriva_mcp_ui.chat.call_tool", AsyncMock(side_effect=MCPAuthError("401"))):
-        with patch("deriva_mcp_ui.chat.anthropic.AsyncAnthropic") as mock_cls:
-            mock_client = MagicMock()
-            mock_cls.return_value = mock_client
-            mock_client.messages.stream.return_value = _mock_stream([], final_tool)
+        with patch("deriva_mcp_ui.chat.litellm") as mock_litellm:
+            mock_litellm.acompletion = AsyncMock(
+                return_value=_tool_call_stream([{"id": "tid", "name": "tool", "arguments": tc_args}])
+            )
+            mock_litellm.RateLimitError = litellm_rate_limit_error()
+            mock_litellm.ServiceUnavailableError = litellm_service_unavailable_error()
 
             with pytest.raises(MCPAuthError):
                 async for _ in run_chat_turn("hi", sess, s):
@@ -418,36 +406,23 @@ async def test_run_chat_turn_tool_error_continues():
     """A non-auth tool error should be returned as a tool_result string, not raised."""
     s = _settings()
     sess = _session()
-    sess.tools = [{"name": "tool", "input_schema": {}}]
+    sess.tools = [_openai_tool("tool")]
 
-    tool_block = _tool_block("tid", "tool", {})
-    tool_block.model_dump.return_value = {
-        "type": "tool_use",
-        "id": "tid",
-        "name": "tool",
-        "input": {},
-    }
-    final_tool = _final_message([tool_block], stop_reason="tool_use")
-    final_end = _final_message([_text_block("Recovered")], stop_reason="end_turn")
-
+    tc_args = json.dumps({})
     call_count = 0
 
-    @contextlib.asynccontextmanager
-    async def _stream_factory(*_a, **_kw):
+    async def _acompletion_side_effect(**_kw):
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            async with _mock_stream([], final_tool) as s_:
-                yield s_
-        else:
-            async with _mock_stream(["Recovered"], final_end) as s_:
-                yield s_
+            return _tool_call_stream([{"id": "tid", "name": "tool", "arguments": tc_args}])
+        return _text_stream(["Recovered"])
 
     with patch("deriva_mcp_ui.chat.call_tool", AsyncMock(side_effect=RuntimeError("oops"))):
-        with patch("deriva_mcp_ui.chat.anthropic.AsyncAnthropic") as mock_cls:
-            mock_client = MagicMock()
-            mock_cls.return_value = mock_client
-            mock_client.messages.stream = _stream_factory
+        with patch("deriva_mcp_ui.chat.litellm") as mock_litellm:
+            mock_litellm.acompletion = AsyncMock(side_effect=_acompletion_side_effect)
+            mock_litellm.RateLimitError = litellm_rate_limit_error()
+            mock_litellm.ServiceUnavailableError = litellm_service_unavailable_error()
 
             chunks = []
             async for chunk in run_chat_turn("hi", sess, s):
@@ -464,25 +439,24 @@ async def test_run_chat_turn_tool_error_continues():
 async def test_run_chat_turn_history_trimmed():
     s = _settings(max_history_turns=2)
     sess = _session()
-    # Pre-load history with 10 messages (5 turns)
+    # Pre-load history with 5 turns (10 messages)
     sess.history = []
     for i in range(5):
         sess.history.append({"role": "user", "content": f"u{i}"})
         sess.history.append({"role": "assistant", "content": f"a{i}"})
     sess.tools = []
 
-    final = _final_message([_text_block("hi")], stop_reason="end_turn")
-
-    with patch("deriva_mcp_ui.chat.anthropic.AsyncAnthropic") as mock_cls:
-        mock_client = MagicMock()
-        mock_cls.return_value = mock_client
-        mock_client.messages.stream.return_value = _mock_stream(["hi"], final)
+    with patch("deriva_mcp_ui.chat.litellm") as mock_litellm:
+        mock_litellm.acompletion = AsyncMock(return_value=_text_stream(["hi"]))
+        mock_litellm.RateLimitError = litellm_rate_limit_error()
+        mock_litellm.ServiceUnavailableError = litellm_service_unavailable_error()
 
         async for _ in run_chat_turn("new", sess, s):
             pass
 
-    # max_history_turns=2 means at most 4 messages (2 pairs) + the new turn = 6 messages -> trimmed to 4
-    assert len(sess.history) <= (s.max_history_turns * 2) + 2
+    # max_history_turns=2 -> at most 2 user messages in history
+    user_msgs = [m for m in sess.history if m.get("role") == "user"]
+    assert len(user_msgs) <= s.max_history_turns
     assert sess.history[0]["role"] == "user"
 
 
@@ -498,8 +472,8 @@ def _default_settings(**kw) -> Settings:
         client_id="cid",
         mcp_resource="https://mcp.example.org",
         public_url="https://chatbot.example.org",
-        anthropic_api_key="sk-ant-test",
-        claude_model="claude-sonnet-4-6",
+        llm_api_key="sk-test",
+        llm_model="claude-sonnet-4-6",
         max_history_turns=5,
         default_hostname="facebase.org",
         default_catalog_id="1",
@@ -512,7 +486,6 @@ async def test_prime_schema_fetches_all_schemas():
     """_prime_schema calls get_catalog_info then get_schema for each schema."""
     s = _default_settings()
     sess = _session()
-    import json
 
     catalog_info = json.dumps({
         "hostname": "facebase.org", "catalog_id": "1",
@@ -543,7 +516,6 @@ async def test_prime_schema_fetches_all_schemas():
 async def test_prime_schema_truncates_large_schemas():
     """Schema priming stops adding schemas once budget is exceeded."""
     from deriva_mcp_ui.chat import _SCHEMA_PRIMING_MAX_CHARS
-    import json
 
     s = _default_settings()
     sess = _session()
@@ -605,8 +577,6 @@ async def test_run_chat_turn_primes_schema_on_first_turn():
     sess.tools = []
     assert sess.schema_primed is False
 
-    final = _final_message([_text_block("ok")], stop_reason="end_turn")
-
     with patch("deriva_mcp_ui.chat.open_session", _mock_open_session), patch(
         "deriva_mcp_ui.chat._prime_schema", AsyncMock(return_value="Schema: isa")
     ) as mock_ps, patch(
@@ -614,10 +584,10 @@ async def test_run_chat_turn_primes_schema_on_first_turn():
     ), patch(
         "deriva_mcp_ui.chat._prime_ermrest_syntax", AsyncMock(return_value="")
     ):
-        with patch("deriva_mcp_ui.chat.anthropic.AsyncAnthropic") as mock_cls:
-            mock_client = MagicMock()
-            mock_cls.return_value = mock_client
-            mock_client.messages.stream.return_value = _mock_stream(["ok"], final)
+        with patch("deriva_mcp_ui.chat.litellm") as mock_litellm:
+            mock_litellm.acompletion = AsyncMock(return_value=_text_stream(["ok"]))
+            mock_litellm.RateLimitError = litellm_rate_limit_error()
+            mock_litellm.ServiceUnavailableError = litellm_service_unavailable_error()
             async for _ in run_chat_turn("hello", sess, s):
                 pass
 
@@ -631,15 +601,13 @@ async def test_run_chat_turn_skips_priming_after_first_turn():
     sess.tools = []
     sess.schema_primed = True  # already primed
 
-    final = _final_message([_text_block("ok")], stop_reason="end_turn")
-
     with patch(
         "deriva_mcp_ui.chat._prime_schema", AsyncMock(return_value="Schema: isa")
     ) as mock_ps:
-        with patch("deriva_mcp_ui.chat.anthropic.AsyncAnthropic") as mock_cls:
-            mock_client = MagicMock()
-            mock_cls.return_value = mock_client
-            mock_client.messages.stream.return_value = _mock_stream(["ok"], final)
+        with patch("deriva_mcp_ui.chat.litellm") as mock_litellm:
+            mock_litellm.acompletion = AsyncMock(return_value=_text_stream(["ok"]))
+            mock_litellm.RateLimitError = litellm_rate_limit_error()
+            mock_litellm.ServiceUnavailableError = litellm_service_unavailable_error()
             async for _ in run_chat_turn("hello again", sess, s):
                 pass
 
@@ -651,13 +619,11 @@ async def test_run_chat_turn_no_priming_in_general_mode():
     sess = _session()
     sess.tools = []
 
-    final = _final_message([_text_block("ok")], stop_reason="end_turn")
-
     with patch("deriva_mcp_ui.chat._prime_schema", AsyncMock()) as mock_ps:
-        with patch("deriva_mcp_ui.chat.anthropic.AsyncAnthropic") as mock_cls:
-            mock_client = MagicMock()
-            mock_cls.return_value = mock_client
-            mock_client.messages.stream.return_value = _mock_stream(["ok"], final)
+        with patch("deriva_mcp_ui.chat.litellm") as mock_litellm:
+            mock_litellm.acompletion = AsyncMock(return_value=_text_stream(["ok"]))
+            mock_litellm.RateLimitError = litellm_rate_limit_error()
+            mock_litellm.ServiceUnavailableError = litellm_service_unavailable_error()
             async for _ in run_chat_turn("hello", sess, s):
                 pass
 
@@ -665,38 +631,41 @@ async def test_run_chat_turn_no_priming_in_general_mode():
 
 
 # ---------------------------------------------------------------------------
-# run_chat_turn -- retry on 429 / 529
+# run_chat_turn -- retry on rate limit / service unavailable
 # ---------------------------------------------------------------------------
 
 
-async def test_run_chat_turn_retries_on_overloaded():
-    """A 529 overloaded error before any text is yielded triggers a retry."""
-    import anthropic as _anthropic
+def litellm_rate_limit_error():
+    """Create a mock RateLimitError class."""
+    return type("RateLimitError", (Exception,), {})
 
+
+def litellm_service_unavailable_error():
+    """Create a mock ServiceUnavailableError class."""
+    return type("ServiceUnavailableError", (Exception,), {})
+
+
+async def test_run_chat_turn_retries_on_service_unavailable():
+    """A ServiceUnavailableError before any text is yielded triggers a retry."""
     s = _settings()
     sess = _session()
-    sess.tools = [{"name": "tool", "input_schema": {}}]
-
-    final = _final_message([_text_block("Success after retry")], stop_reason="end_turn")
+    sess.tools = [_openai_tool("tool")]
 
     call_count = 0
+    _SUE = litellm_service_unavailable_error()
 
-    @contextlib.asynccontextmanager
-    async def _stream_factory(*_a, **_kw):
+    async def _acompletion_side_effect(**_kw):
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            raise _anthropic.APIStatusError(
-                "overloaded",
-                response=MagicMock(status_code=529, headers={}),
-                body={"type": "error", "error": {"type": "overloaded_error"}},
-            )
-        async with _mock_stream(["Success after retry"], final) as s_:
-            yield s_
+            raise _SUE("overloaded")
+        return _text_stream(["Success after retry"])
 
     with patch("deriva_mcp_ui.chat.asyncio.sleep", AsyncMock()) as mock_sleep:
-        with patch("deriva_mcp_ui.chat.anthropic.AsyncAnthropic") as mock_cls:
-            mock_cls.return_value.messages.stream = _stream_factory
+        with patch("deriva_mcp_ui.chat.litellm") as mock_litellm:
+            mock_litellm.acompletion = AsyncMock(side_effect=_acompletion_side_effect)
+            mock_litellm.RateLimitError = litellm_rate_limit_error()
+            mock_litellm.ServiceUnavailableError = _SUE
             events = []
             async for event in run_chat_turn("hi", sess, s):
                 events.append(event)
@@ -707,33 +676,26 @@ async def test_run_chat_turn_retries_on_overloaded():
 
 
 async def test_run_chat_turn_retries_on_rate_limit():
-    """A 429 rate-limit error before any text is yielded triggers a retry."""
-    import anthropic as _anthropic
-
+    """A RateLimitError before any text is yielded triggers a retry."""
     s = _settings()
     sess = _session()
-    sess.tools = [{"name": "tool", "input_schema": {}}]
-
-    final = _final_message([_text_block("Done")], stop_reason="end_turn")
+    sess.tools = [_openai_tool("tool")]
 
     call_count = 0
+    _RLE = litellm_rate_limit_error()
 
-    @contextlib.asynccontextmanager
-    async def _stream_factory(*_a, **_kw):
+    async def _acompletion_side_effect(**_kw):
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            raise _anthropic.RateLimitError(
-                "rate limited",
-                response=MagicMock(status_code=429, headers={}),
-                body={},
-            )
-        async with _mock_stream(["Done"], final) as s_:
-            yield s_
+            raise _RLE("rate limited")
+        return _text_stream(["Done"])
 
     with patch("deriva_mcp_ui.chat.asyncio.sleep", AsyncMock()):
-        with patch("deriva_mcp_ui.chat.anthropic.AsyncAnthropic") as mock_cls:
-            mock_cls.return_value.messages.stream = _stream_factory
+        with patch("deriva_mcp_ui.chat.litellm") as mock_litellm:
+            mock_litellm.acompletion = AsyncMock(side_effect=_acompletion_side_effect)
+            mock_litellm.RateLimitError = _RLE
+            mock_litellm.ServiceUnavailableError = litellm_service_unavailable_error()
             events = []
             async for event in run_chat_turn("hi", sess, s):
                 events.append(event)
@@ -744,25 +706,21 @@ async def test_run_chat_turn_retries_on_rate_limit():
 
 async def test_run_chat_turn_raises_after_max_retries():
     """Exhausting all retries re-raises the last exception."""
-    import anthropic as _anthropic
-
     s = _settings()
     sess = _session()
-    sess.tools = [{"name": "tool", "input_schema": {}}]
+    sess.tools = [_openai_tool("tool")]
 
-    @contextlib.asynccontextmanager
-    async def _always_overloaded(*_a, **_kw):
-        raise _anthropic.APIStatusError(
-            "overloaded",
-            response=MagicMock(status_code=529, headers={}),
-            body={},
-        )
-        yield  # pragma: no cover
+    _SUE = litellm_service_unavailable_error()
+
+    async def _always_overloaded(**_kw):
+        raise _SUE("overloaded")
 
     with patch("deriva_mcp_ui.chat.asyncio.sleep", AsyncMock()):
-        with patch("deriva_mcp_ui.chat.anthropic.AsyncAnthropic") as mock_cls:
-            mock_cls.return_value.messages.stream = _always_overloaded
-            with pytest.raises(_anthropic.APIStatusError):
+        with patch("deriva_mcp_ui.chat.litellm") as mock_litellm:
+            mock_litellm.acompletion = AsyncMock(side_effect=_always_overloaded)
+            mock_litellm.RateLimitError = litellm_rate_limit_error()
+            mock_litellm.ServiceUnavailableError = _SUE
+            with pytest.raises(_SUE):
                 async for _ in run_chat_turn("hi", sess, s):
                     pass
 
@@ -781,50 +739,24 @@ async def test_run_chat_turn_poll_delay_on_repeated_tool():
 
     s = _settings()
     sess = _session()
-    sess.tools = [{"name": "get_task_status", "input_schema": {}}]
+    sess.tools = [_openai_tool("get_task_status")]
 
-    # Turn 1: Claude calls get_task_status -> "in progress"
-    # Turn 2: Claude calls get_task_status again -> "complete", then end_turn
-    tool_use_block_1 = MagicMock()
-    tool_use_block_1.type = "tool_use"
-    tool_use_block_1.id = "tu_1"
-    tool_use_block_1.name = "get_task_status"
-    tool_use_block_1.input = {"task_id": "t1"}
-
-    tool_use_block_2 = MagicMock()
-    tool_use_block_2.type = "tool_use"
-    tool_use_block_2.id = "tu_2"
-    tool_use_block_2.name = "get_task_status"
-    tool_use_block_2.input = {"task_id": "t1"}
-
-    first_tool_response = _final_message([tool_use_block_1], stop_reason="tool_use")
-    second_tool_response = _final_message([tool_use_block_2], stop_reason="tool_use")
-    end_response = _final_message([_text_block("Done")], stop_reason="end_turn")
-
+    tc_args = json.dumps({"task_id": "t1"})
     call_count = 0
 
-    @contextlib.asynccontextmanager
-    async def _rotating_stream(*_a, **_kw):
+    async def _acompletion_side_effect(**_kw):
         nonlocal call_count
         call_count += 1
-        if call_count == 1:
-            final = first_tool_response
-            chunks: list[str] = []
-        elif call_count == 2:
-            final = second_tool_response
-            chunks = []
-        else:
-            final = end_response
-            chunks = ["Done"]
-        stream = MagicMock()
-        stream.text_stream = _text_chunks(chunks)
-        stream.get_final_message = AsyncMock(return_value=final)
-        yield stream
+        if call_count <= 2:
+            return _tool_call_stream([{"id": f"tu_{call_count}", "name": "get_task_status", "arguments": tc_args}])
+        return _text_stream(["Done"])
 
     sleep_mock = AsyncMock()
     with patch("deriva_mcp_ui.chat.asyncio.sleep", sleep_mock):
-        with patch("deriva_mcp_ui.chat.anthropic.AsyncAnthropic") as mock_cls:
-            mock_cls.return_value.messages.stream = _rotating_stream
+        with patch("deriva_mcp_ui.chat.litellm") as mock_litellm:
+            mock_litellm.acompletion = AsyncMock(side_effect=_acompletion_side_effect)
+            mock_litellm.RateLimitError = litellm_rate_limit_error()
+            mock_litellm.ServiceUnavailableError = litellm_service_unavailable_error()
             with patch("deriva_mcp_ui.chat.call_tool", AsyncMock(return_value="in progress")):
                 events = []
                 async for ev in run_chat_turn("check status", sess, s):
@@ -894,7 +826,6 @@ async def test_fetch_guides_returns_empty_on_total_failure():
 async def test_prime_ermrest_syntax_returns_chunks():
     s = _default_settings()
     sess = _session()
-    import json
 
     rag_result = json.dumps([
         {"source": "doc1.md", "text": "ERMrest filter syntax"},
@@ -912,7 +843,6 @@ async def test_prime_ermrest_syntax_returns_chunks():
 async def test_prime_ermrest_syntax_deduplicates_by_source():
     s = _default_settings()
     sess = _session()
-    import json
 
     # Both queries return the same source -- should appear only once
     rag_result = json.dumps([{"source": "same.md", "text": "same chunk"}])
@@ -990,16 +920,377 @@ async def test_run_chat_turn_stops_on_cancelled_event():
     """When the cancelled event is set, the loop raises ChatCancelled."""
     s = _settings()
     sess = _session()
-    sess.tools = [{"name": "get_schema", "input_schema": {}}]
+    sess.tools = [_openai_tool("get_schema")]
 
     cancelled = asyncio.Event()
     cancelled.set()  # pre-set -- should stop immediately
 
     events = []
     with pytest.raises(ChatCancelled):
-        with patch("deriva_mcp_ui.chat.anthropic.AsyncAnthropic"):
+        with patch("deriva_mcp_ui.chat.litellm"):
             async for ev in run_chat_turn("hello", sess, s, cancelled=cancelled):
                 events.append(ev)
 
     # No events should have been yielded -- cancelled before first LLM call
     assert len(events) == 0
+
+
+# ---------------------------------------------------------------------------
+# RAG-only mode
+# ---------------------------------------------------------------------------
+
+
+def _rag_settings(**kw) -> Settings:
+    """Settings configured for RAG-only mode (no API key)."""
+    base = dict(
+        mcp_url="http://mcp:8000",
+        mode="rag_only",
+        max_history_turns=5,
+        default_hostname="facebase.org",
+        default_catalog_id="1",
+    )
+    base.update(kw)
+    return Settings(**base)
+
+
+def test_format_rag_response_with_results():
+    results = [
+        {"text": "ERMrest is a relational data service. It provides a RESTful HTTP interface to PostgreSQL.", "source": "docs/guide.md", "score": 0.85},
+        {"text": "ERMrest supports entity retrieval and filtering via URL patterns.", "source": "docs/ref.md", "score": 0.70},
+    ]
+    resp = _format_rag_response("what is ERMrest?", results)
+    assert "ERMrest is a relational data service" in resp
+    # Per-source headings with relevance (grouped output uses #####)
+    assert "#### **guide.md** (relevance: 0.85)" in resp
+    assert "#### **ref.md** (relevance: 0.70)" in resp
+    # Most relevant source appears first
+    assert resp.index("guide.md") < resp.index("ref.md")
+
+
+def test_format_rag_response_no_results():
+    resp = _format_rag_response("unknown topic", [])
+    assert "No relevant documentation found" in resp
+
+
+def test_format_rag_response_deduplicates_sentences():
+    """Identical sentences across sources appear only once (first source wins)."""
+    results = [
+        {"text": "ERMrest is a relational data service for scientific data.", "source": "a.md", "score": 0.9},
+        {"text": "ERMrest is a relational data service for scientific data.", "source": "b.md", "score": 0.8},
+    ]
+    resp = _format_rag_response("what is ERMrest?", results)
+    assert resp.count("ERMrest is a relational data service") == 1
+
+
+def test_format_rag_response_with_schema():
+    resp = _format_rag_response(
+        "what tables exist?",
+        [{"text": "The isa schema contains several important research tables.", "source": "doc.md", "score": 0.7}],
+        schema_text="Schema: isa (3 tables)",
+    )
+    assert "Schema: isa" in resp
+    assert "important research tables" in resp
+
+
+def test_format_rag_response_schema_only():
+    resp = _format_rag_response("show tables", [], schema_text="Schema: isa")
+    assert "Schema: isa" in resp
+    assert "No relevant documentation" not in resp
+
+
+def test_format_rag_response_low_relevance_filtered_out():
+    """Results below the minimum relevance threshold are excluded."""
+    results = [
+        {"text": "Some tangentially related content about data management.", "source": "a.md", "score": 0.15},
+    ]
+    resp = _format_rag_response("unrelated question", results)
+    assert "No relevant documentation found" in resp
+
+
+def test_format_rag_response_low_confidence_warning():
+    """Results above threshold but below confidence level show a warning."""
+    results = [
+        {"text": "Some tangentially related content about data management.", "source": "a.md", "score": 0.35},
+    ]
+    resp = _format_rag_response("unrelated question", results)
+    assert "not entirely certain" in resp
+
+
+def test_format_rag_response_how_to_framing():
+    results = [
+        {"text": "First step is to navigate to the catalog page. Then select the schema you want.", "source": "a.md", "score": 0.8},
+    ]
+    resp = _format_rag_response("how do I browse schemas?", results)
+    assert "process" in resp.lower() or "documentation says" in resp.lower()
+
+
+def test_format_rag_response_data_framing():
+    results = [
+        {"text": "You can download datasets using the export feature in Chaise.", "source": "a.md", "score": 0.8},
+    ]
+    resp = _format_rag_response("how do I download data?", results)
+    assert "download datasets" in resp
+
+
+def test_format_rag_response_preserves_markdown_tables():
+    """Chunks containing markdown tables are included verbatim, not sentence-split."""
+    table_text = (
+        "## Actions\n"
+        "| Action | Path | Description |\n"
+        "| --- | --- | --- |\n"
+        "| read | /entity | Read entities |\n"
+        "| create | /entity | Create entities |"
+    )
+    results = [{"text": table_text, "source": "docs/actions.md", "score": 0.8}]
+    resp = _format_rag_response("what actions are available?", results)
+    assert "| Action | Path | Description |" in resp
+    assert "| read | /entity | Read entities |" in resp
+    assert "#### **actions.md** (relevance: 0.80)" in resp
+
+
+def test_format_rag_response_preserves_schema_listings():
+    """Chunks with column type annotations are treated as structured."""
+    listing = (
+        "### Table: Dataset\n"
+        "Columns:\n"
+        "RID (ermrest_rid NOT NULL)\n"
+        "Title (text NOT NULL)\n"
+        "Description (text NOT NULL)\n"
+        "Persistent_ID (text)"
+    )
+    results = [{"text": listing, "source": "schema:fb/1", "score": 0.9}]
+    resp = _format_rag_response("describe the dataset table", results)
+    assert "RID (ermrest_rid NOT NULL)" in resp
+    assert "Title (text NOT NULL)" in resp
+
+
+def test_format_rag_response_mixed_structured_and_prose():
+    """When results contain both structured and prose chunks, both appear
+    as separate source sections."""
+    table_chunk = "| Column | Type |\n| --- | --- |\n| RID | text |\n| Title | text |"
+    prose_chunk = "The Dataset table stores metadata about research datasets and their provenance."
+    results = [
+        {"text": table_chunk, "source": "schema.md", "score": 0.9},
+        {"text": prose_chunk, "source": "guide.md", "score": 0.7},
+    ]
+    resp = _format_rag_response("what is the dataset table?", results)
+    assert "| RID | text |" in resp
+    assert "research datasets" in resp
+    # Higher-scored source comes first
+    assert resp.index("schema.md") < resp.index("guide.md")
+
+
+def test_format_rag_response_source_ordering():
+    """Sources are ordered by relevance score, most relevant first."""
+    results = [
+        {"text": "Lower relevance content about something tangential but still useful.", "source": "low.md", "score": 0.55},
+        {"text": "High relevance content with the exact answer to the question.", "source": "high.md", "score": 0.90},
+        {"text": "Medium relevance content providing some additional context here.", "source": "mid.md", "score": 0.65},
+    ]
+    resp = _format_rag_response("describe attributegroup", results)
+    assert resp.index("high.md") < resp.index("mid.md")
+    assert resp.index("mid.md") < resp.index("low.md")
+
+
+def test_format_rag_response_threshold_hides_low_scores():
+    """Sources below the relevance threshold are hidden with a note."""
+    results = [
+        {"text": "High relevance content with the exact answer.", "source": "high.md", "score": 0.85},
+        {"text": "Below-threshold content that is only tangentially related here.", "source": "low.md", "score": 0.42},
+    ]
+    resp = _format_rag_response("what is ERMrest?", results)
+    assert "#### **high.md** (relevance: 0.85)" in resp
+    assert "#### **low.md**" not in resp
+    assert "additional source" in resp
+    assert "show all results" in resp
+
+
+def test_format_rag_response_show_all_includes_low_scores():
+    """show_all=True renders sources below the relevance threshold."""
+    results = [
+        {"text": "High relevance content with the exact answer.", "source": "high.md", "score": 0.85},
+        {"text": "Below-threshold content that is only tangentially related here.", "source": "low.md", "score": 0.42},
+    ]
+    resp = _format_rag_response("what is ERMrest?", results, show_all=True)
+    assert "#### **high.md** (relevance: 0.85)" in resp
+    assert "#### **low.md** (relevance: 0.42)" in resp
+    assert "additional source" not in resp
+
+
+# ---------------------------------------------------------------------------
+# Key term extraction and result merging
+# ---------------------------------------------------------------------------
+
+
+def test_extract_key_terms_strips_stop_words():
+    result = _extract_key_terms("how does an ermrest attributegroup query work?")
+    assert "ermrest" in result
+    assert "attributegroup" in result
+    assert "query" in result
+    assert "how" not in result
+    assert "does" not in result
+
+
+def test_extract_key_terms_empty_for_short_question():
+    assert _extract_key_terms("what is it?") == ""
+
+
+def test_extract_key_terms_empty_when_mostly_content():
+    # If almost all words are content words, skip secondary search
+    assert _extract_key_terms("ermrest attributegroup") == ""
+
+
+def test_merge_rag_results_deduplicates_by_source():
+    primary = [
+        {"text": "a", "source": "doc1.md", "score": 0.8},
+        {"text": "b", "source": "doc2.md", "score": 0.6},
+    ]
+    secondary = [
+        {"text": "c", "source": "doc2.md", "score": 0.7},  # dup source
+        {"text": "d", "source": "doc3.md", "score": 0.9},
+    ]
+    merged = _merge_rag_results(primary, secondary)
+    sources = [r["source"] for r in merged]
+    assert sources.count("doc2.md") == 1
+    assert "doc3.md" in sources
+
+
+def test_merge_rag_results_sorted_by_score():
+    primary = [{"text": "a", "source": "low.md", "score": 0.3}]
+    secondary = [{"text": "b", "source": "high.md", "score": 0.9}]
+    merged = _merge_rag_results(primary, secondary)
+    assert merged[0]["source"] == "high.md"
+    assert merged[1]["source"] == "low.md"
+
+
+@pytest.mark.asyncio
+async def test_rag_only_runs_secondary_search():
+    """Multi-query: a secondary key-term search is run and results merged."""
+    s = _rag_settings()
+    sess = _session()
+
+    call_log: list[tuple[str, dict]] = []
+
+    async def _mock_call_tool(token, name, args, url, **kw):
+        call_log.append((name, args))
+        if name == "rag_search":
+            return json.dumps([
+                {"text": "Relevant documentation about the topic at hand.", "source": f"doc-{len(call_log)}.md", "score": 0.5},
+            ])
+        return ""
+
+    with patch("deriva_mcp_ui.chat.call_tool", AsyncMock(side_effect=_mock_call_tool)):
+        events = []
+        async for ev in run_chat_turn("how does ermrest attributegroup query work?", sess, s):
+            events.append(ev)
+
+    # Should have four rag_search calls:
+    # 1. primary (full question, no filter)
+    # 2. secondary key-terms (no filter)
+    # 3. supplemental web-content
+    # 4. supplemental user-guide
+    search_calls = [(n, a) for n, a in call_log if n == "rag_search"]
+    assert len(search_calls) == 4
+    unfiltered = [a for _, a in search_calls if "doc_type" not in a]
+    assert len(unfiltered) == 2
+    assert unfiltered[0]["query"] == "how does ermrest attributegroup query work?"
+    assert "ermrest" in unfiltered[1]["query"]
+    assert "attributegroup" in unfiltered[1]["query"]
+    doc_types = {a["doc_type"] for _, a in search_calls if "doc_type" in a}
+    assert doc_types == {"web-content", "user-guide"}
+
+
+@pytest.mark.asyncio
+async def test_run_chat_turn_rag_only_routing():
+    """RAG-only mode calls _rag_only_response, not the LLM loop."""
+    s = _rag_settings()
+    sess = _session()
+    assert s.operating_tier == "rag_only"
+
+    rag_results = json.dumps([
+        {"text": "You can query data using the entity browser in Chaise or the ERMrest API.", "source": "guide.md", "score": 0.8},
+    ])
+
+    async def _mock_call_tool(token, name, args, url, **kw):
+        if name == "rag_search":
+            return rag_results
+        if name == "get_catalog_info":
+            return "catalog info"
+        return ""
+
+    with patch("deriva_mcp_ui.chat.call_tool", AsyncMock(side_effect=_mock_call_tool)):
+        events = []
+        async for ev in run_chat_turn("how do I query data?", sess, s):
+            events.append(ev)
+
+    text = _collect_text(events)
+    assert "query data using the entity browser" in text
+    # History should have user + assistant messages
+    assert len(sess.history) == 2
+    assert sess.history[0]["role"] == "user"
+    assert sess.history[1]["role"] == "assistant"
+
+
+@pytest.mark.asyncio
+async def test_rag_only_schema_lookup_on_schema_question():
+    """RAG-only mode also calls get_catalog_info when question mentions tables."""
+    s = _rag_settings()
+    sess = _session()
+
+    call_log: list[str] = []
+
+    async def _mock_call_tool(token, name, args, url, **kw):
+        call_log.append(name)
+        if name == "rag_search":
+            return json.dumps([{"text": "The catalog contains research datasets organized by schema.", "source": "s", "score": 0.5}])
+        if name == "get_catalog_info":
+            return "Tables: Study, Dataset, Subject"
+        return ""
+
+    with patch("deriva_mcp_ui.chat.call_tool", AsyncMock(side_effect=_mock_call_tool)):
+        events = []
+        async for ev in run_chat_turn("what tables are available?", sess, s):
+            events.append(ev)
+
+    assert "get_catalog_info" in call_log
+    assert "rag_search" in call_log
+    text = _collect_text(events)
+    assert "Tables: Study" in text
+
+
+@pytest.mark.asyncio
+async def test_rag_only_no_schema_for_non_schema_question():
+    """RAG-only mode skips get_catalog_info for non-schema questions."""
+    s = _rag_settings()
+    sess = _session()
+
+    call_log: list[str] = []
+
+    async def _mock_call_tool(token, name, args, url, **kw):
+        call_log.append(name)
+        if name == "rag_search":
+            return json.dumps([{"text": "answer", "source": "a", "score": 0.9}])
+        return ""
+
+    with patch("deriva_mcp_ui.chat.call_tool", AsyncMock(side_effect=_mock_call_tool)):
+        events = []
+        async for ev in run_chat_turn("how do I export data?", sess, s):
+            events.append(ev)
+
+    assert "get_catalog_info" not in call_log
+    assert "rag_search" in call_log
+
+
+@pytest.mark.asyncio
+async def test_rag_only_handles_search_failure():
+    """RAG-only mode yields fallback text when rag_search fails."""
+    s = _rag_settings()
+    sess = _session()
+
+    with patch("deriva_mcp_ui.chat.call_tool", AsyncMock(side_effect=RuntimeError("down"))):
+        events = []
+        async for ev in run_chat_turn("anything", sess, s):
+            events.append(ev)
+
+    text = _collect_text(events)
+    assert "No relevant documentation found" in text

@@ -14,6 +14,15 @@
 (function () {
   "use strict";
 
+  // Wrapper around marked.parse that adds target="_blank" to all links.
+  // Using a post-render string replace avoids the marked v4/v5 renderer API
+  // change (v5+ passes a token object instead of (href, title, text) args).
+  function renderMarkdown(text) {
+    if (typeof marked === "undefined") return null;
+    var html = marked.parse(text, { breaks: true, gfm: true });
+    return html.replace(/<a href=/g, '<a target="_blank" rel="noopener noreferrer" href=');
+  }
+
   const thread       = document.getElementById("thread");
   const input        = document.getElementById("message-input");
   const sendBtn      = document.getElementById("send-btn");
@@ -23,6 +32,7 @@
   const gpCatalogId  = document.getElementById("gp-catalog-id");
   const catalogTitle    = document.getElementById("catalog-title");
   const clearHistoryBtn = document.getElementById("clear-history-btn");
+  const searchBanner    = document.getElementById("search-mode-banner");
   const userLabel       = document.getElementById("user-label");
   const logoutLink      = document.getElementById("logout-link");
 
@@ -31,6 +41,13 @@
 
   let busy = false;
   let abortController = null;
+
+  // Command history -- up/down arrow navigation like a terminal.
+  // cmdHistory[0] = oldest, cmdHistory[length-1] = most recent.
+  // historyPos = -1 means "at current draft" (not navigating history).
+  const cmdHistory = [];
+  let historyPos = -1;
+  let historyDraft = "";
 
   // ------------------------------------------------------------------
   // Logged-out state: show login link, hide input
@@ -95,6 +112,10 @@
       catalogBar.style.display = "flex";
     }
 
+    if (info.operating_mode === "rag_only") {
+      searchBanner.style.display = "block";
+    }
+
     // Load conversation history from previous sessions
     await loadHistory();
     clearHistoryBtn.style.display = "";
@@ -105,6 +126,14 @@
       var resp = await fetch("history");
       if (!resp.ok) return;
       var data = await resp.json();
+
+      // Populate command history from server (persisted across page refreshes).
+      var serverInputHistory = data.input_history || [];
+      if (serverInputHistory.length > 0) {
+        cmdHistory.length = 0;
+        cmdHistory.push.apply(cmdHistory, serverInputHistory);
+      }
+
       var messages = data.messages || [];
       if (messages.length === 0) return;
 
@@ -117,8 +146,9 @@
           el.className = "msg msg-assistant";
           var textEl = document.createElement("div");
           textEl.className = "msg-text";
-          if (typeof marked !== "undefined") {
-            textEl.innerHTML = marked.parse(msg.content, { breaks: true, gfm: true });
+          const rendered = renderMarkdown(msg.content);
+          if (rendered !== null) {
+            textEl.innerHTML = rendered;
           } else {
             textEl.textContent = msg.content;
           }
@@ -179,6 +209,13 @@
     sendBtn.disabled = false;
     input.value = "";
     autoResize();
+
+    // Push to command history (skip exact duplicate of most recent entry).
+    if (cmdHistory.length === 0 || cmdHistory[cmdHistory.length - 1] !== text) {
+      cmdHistory.push(text);
+    }
+    historyPos = -1;
+    historyDraft = "";
 
     appendUserMessage(text);
     const assistantEl = appendAssistantPlaceholder();
@@ -479,8 +516,9 @@
   function renderPartial(msgEl, text) {
     const textEl = msgEl.querySelector(".msg-text");
     if (!textEl) return;
-    if (typeof marked !== "undefined") {
-      textEl.innerHTML = marked.parse(text, { breaks: true, gfm: true });
+    const rendered = renderMarkdown(text);
+    if (rendered !== null) {
+      textEl.innerHTML = rendered;
     } else {
       textEl.textContent = text;
     }
@@ -490,8 +528,9 @@
   function renderFinal(msgEl, text) {
     const textEl = msgEl.querySelector(".msg-text");
     if (!textEl) return;
-    if (typeof marked !== "undefined") {
-      textEl.innerHTML = marked.parse(text, { breaks: true, gfm: true });
+    const rendered = renderMarkdown(text);
+    if (rendered !== null) {
+      textEl.innerHTML = rendered;
     } else {
       textEl.textContent = text;
     }
@@ -555,6 +594,45 @@
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       sendMessage();
+      return;
+    }
+
+    // ArrowUp: navigate to older history entry when caret is on the first line.
+    if (e.key === "ArrowUp") {
+      var beforeCursor = input.value.lastIndexOf("\n", input.selectionStart - 1);
+      if (beforeCursor !== -1) return; // caret not on first line -- let browser handle
+      if (cmdHistory.length === 0) return;
+      if (historyPos === -1) {
+        historyDraft = input.value;
+        historyPos = cmdHistory.length - 1;
+      } else if (historyPos > 0) {
+        historyPos--;
+      } else {
+        return; // already at oldest entry
+      }
+      e.preventDefault();
+      input.value = cmdHistory[historyPos];
+      input.selectionStart = input.selectionEnd = 0;
+      autoResize();
+      return;
+    }
+
+    // ArrowDown: navigate to newer history entry when caret is on the last line.
+    if (e.key === "ArrowDown") {
+      var afterCursor = input.value.indexOf("\n", input.selectionEnd);
+      if (afterCursor !== -1) return; // caret not on last line -- let browser handle
+      if (historyPos === -1) return; // already at draft
+      e.preventDefault();
+      if (historyPos < cmdHistory.length - 1) {
+        historyPos++;
+        input.value = cmdHistory[historyPos];
+      } else {
+        historyPos = -1;
+        input.value = historyDraft;
+      }
+      input.selectionStart = input.selectionEnd = input.value.length;
+      autoResize();
+      return;
     }
   });
 

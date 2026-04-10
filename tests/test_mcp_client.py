@@ -10,7 +10,7 @@ import pytest
 from deriva_mcp_ui.mcp_client import (
     MCPAuthError,
     MCPConnectionError,
-    _slim_input_schema,
+    _slim_parameters,
     call_tool,
     list_tools,
 )
@@ -67,8 +67,8 @@ async def test_list_tools_empty():
     assert result == []
 
 
-async def test_list_tools_converts_schema_key():
-    """inputSchema (MCP) must become input_schema (Anthropic)."""
+async def test_list_tools_converts_to_openai_format():
+    """inputSchema (MCP) must become function.parameters (OpenAI format)."""
     schema = {"type": "object", "properties": {"hostname": {"type": "string"}}}
     session = AsyncMock()
     session.list_tools.return_value = MagicMock(
@@ -80,11 +80,12 @@ async def test_list_tools_converts_schema_key():
 
     assert len(result) == 1
     tool = result[0]
-    assert tool["name"] == "get_entities"
-    assert tool["description"] == "Get entities"
+    assert tool["type"] == "function"
+    assert tool["function"]["name"] == "get_entities"
+    assert tool["function"]["description"] == "Get entities"
     assert "inputSchema" not in tool
     # Property type preserved; no description/title injected on this fixture
-    assert tool["input_schema"]["properties"]["hostname"] == {"type": "string"}
+    assert tool["function"]["parameters"]["properties"]["hostname"] == {"type": "string"}
 
 
 async def test_list_tools_strips_property_descriptions():
@@ -112,19 +113,20 @@ async def test_list_tools_strips_property_descriptions():
     with patch("deriva_mcp_ui.mcp_client._connect", return_value=_fake_connect(session)):
         result = await list_tools(TOKEN, MCP_URL)
 
-    props = result[0]["input_schema"]["properties"]
+    params = result[0]["function"]["parameters"]
+    props = params["properties"]
     assert "description" not in props["hostname"]
     assert "title" not in props["hostname"]
     assert props["hostname"] == {"type": "string"}
     assert "description" not in props["catalog_id"]
     assert props["catalog_id"] == {"type": "string"}
     # Top-level schema fields are untouched
-    assert result[0]["input_schema"]["type"] == "object"
-    assert result[0]["input_schema"]["required"] == ["hostname"]
+    assert params["type"] == "object"
+    assert params["required"] == ["hostname"]
 
 
 # ---------------------------------------------------------------------------
-# _slim_input_schema unit tests
+# _slim_parameters unit tests
 # ---------------------------------------------------------------------------
 
 
@@ -136,7 +138,7 @@ def test_slim_schema_removes_description_and_title():
             "y": {"type": "integer", "description": "Y value"},
         },
     }
-    result = _slim_input_schema(schema)
+    result = _slim_parameters(schema)
     assert result["properties"]["x"] == {"type": "string"}
     assert result["properties"]["y"] == {"type": "integer"}
 
@@ -149,7 +151,7 @@ def test_slim_schema_preserves_top_level_fields():
         "required": ["x"],
         "properties": {"x": {"type": "string", "description": "ignored"}},
     }
-    result = _slim_input_schema(schema)
+    result = _slim_parameters(schema)
     assert result["type"] == "object"
     assert result["description"] == "Tool schema"
     assert result["title"] == "MyTool"
@@ -158,22 +160,22 @@ def test_slim_schema_preserves_top_level_fields():
 
 def test_slim_schema_empty_properties():
     schema = {"type": "object", "properties": {}}
-    result = _slim_input_schema(schema)
+    result = _slim_parameters(schema)
     assert result == {"type": "object", "properties": {}}
 
 
 def test_slim_schema_no_properties_key():
     schema = {"type": "object"}
-    result = _slim_input_schema(schema)
+    result = _slim_parameters(schema)
     assert result == {"type": "object"}
 
 
 def test_slim_schema_empty_dict():
-    assert _slim_input_schema({}) == {}
+    assert _slim_parameters({}) == {}
 
 
 def test_slim_schema_none():
-    assert _slim_input_schema(None) is None  # type: ignore[arg-type]
+    assert _slim_parameters(None) is None  # type: ignore[arg-type]
 
 
 async def test_list_tools_multiple():
@@ -189,22 +191,22 @@ async def test_list_tools_multiple():
     with patch("deriva_mcp_ui.mcp_client._connect", return_value=_fake_connect(session)):
         result = await list_tools(TOKEN, MCP_URL)
 
-    assert [t["name"] for t in result] == ["get_entities", "get_schema", "rag_search"]
+    assert [t["function"]["name"] for t in result] == ["get_entities", "get_schema", "rag_search"]
 
 
 async def test_list_tools_no_description_omitted():
-    """Tools with empty description should not carry a 'description' key."""
+    """Tools with empty description should not carry a 'description' key in function."""
     session = AsyncMock()
     session.list_tools.return_value = MagicMock(tools=[_mock_tool("no_desc", description="")])
 
     with patch("deriva_mcp_ui.mcp_client._connect", return_value=_fake_connect(session)):
         result = await list_tools(TOKEN, MCP_URL)
 
-    assert "description" not in result[0]
+    assert "description" not in result[0]["function"]
 
 
 async def test_list_tools_none_schema_becomes_empty_dict():
-    """A tool with inputSchema=None should produce input_schema={}."""
+    """A tool with inputSchema=None should produce parameters={}."""
     t = MagicMock()
     t.name = "bare_tool"
     t.description = "desc"
@@ -216,7 +218,7 @@ async def test_list_tools_none_schema_becomes_empty_dict():
     with patch("deriva_mcp_ui.mcp_client._connect", return_value=_fake_connect(session)):
         result = await list_tools(TOKEN, MCP_URL)
 
-    assert result[0]["input_schema"] == {}
+    assert result[0]["function"]["parameters"] == {}
 
 
 # ---------------------------------------------------------------------------

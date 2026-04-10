@@ -150,7 +150,7 @@ async def test_overwrite_updates_session(store):
 async def test_tools_and_flags_roundtrip(store):
     sid = _sid()
     s = _session("bob")
-    s.tools = [{"name": "get_entities", "description": "...", "input_schema": {}}]
+    s.tools = [{"type": "function", "function": {"name": "get_entities", "parameters": {}}}]
     s.schema_primed = True
     s.gp_hostname = "example.org"
     s.gp_catalog_id = "1"
@@ -159,7 +159,7 @@ async def test_tools_and_flags_roundtrip(store):
     result = await store.get(sid)
     assert result is not None
     assert result.tools is not None
-    assert result.tools[0]["name"] == "get_entities"
+    assert result.tools[0]["function"]["name"] == "get_entities"
     assert result.schema_primed is True
     assert result.gp_hostname == "example.org"
     assert result.gp_catalog_id == "1"

@@ -1,14 +1,13 @@
 """Settings for deriva-mcp-ui.
 
 All configuration is via DERIVA_CHATBOT_* environment variables.
-ANTHROPIC_API_KEY is the one exception -- it uses the standard env var name.
 """
 
 from __future__ import annotations
 
 from urllib.parse import urlparse
 
-from pydantic import AliasChoices, Field
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _LOGO_ALLOWED_SCHEMES = ("https",)
@@ -27,11 +26,14 @@ class Settings(BaseSettings):
     mcp_resource: str = ""
     public_url: str = ""
 
-    # Anthropic API key -- standard env var name (no DERIVA_CHATBOT_ prefix)
-    anthropic_api_key: str = Field(
-        default="",
-        validation_alias=AliasChoices("ANTHROPIC_API_KEY", "DERIVA_CHATBOT_ANTHROPIC_API_KEY"),
-    )
+    # LLM provider configuration
+    llm_api_key: str = Field(default="")
+    llm_model: str = "claude-haiku-4-5"
+    llm_provider: str = ""  # auto-detected from model string if empty
+    llm_api_base: str = ""  # for Ollama, Azure, self-hosted endpoints
+
+    # Operating mode: "auto" (detect from config), "rag_only", or "llm"
+    mode: str = "auto"
 
     # Default-catalog mode (both must be set to activate)
     default_hostname: str = ""
@@ -43,7 +45,6 @@ class Settings(BaseSettings):
     header_logo_url: str = "static/deriva-logo.png"
 
     # Tuning
-    claude_model: str = "claude-haiku-4-5"
     max_history_turns: int = 10
     max_message_length: int = 10000
     session_ttl: int = 28800
@@ -66,27 +67,49 @@ class Settings(BaseSettings):
         """True when Credenza is configured and the OAuth login flow is active."""
         return bool(self.credenza_url)
 
+    @property
+    def operating_tier(self) -> str:
+        """Return the effective operating tier: 'llm', 'local', or 'rag_only'.
+
+        When mode is 'auto', the tier is detected from configuration:
+        - API key present -> 'llm' (cloud API)
+        - Provider is 'ollama' with a model configured -> 'local'
+        - Neither -> 'rag_only'
+
+        Explicit mode='rag_only' or mode='llm' overrides auto-detection.
+        """
+        if self.mode == "rag_only":
+            return "rag_only"
+        if self.mode == "llm":
+            return "llm"
+        # auto-detection
+        if self.llm_api_key:
+            return "llm"
+        if self.llm_provider == "ollama" and self.llm_model:
+            return "local"
+        return "rag_only"
+
     def validate_for_http(self) -> None:
         """Raise ValueError if any required field is missing.
 
-        When credenza_url is not set the server operates in anonymous mode:
-        no login flow, no bearer token forwarded to the MCP server.  Only
-        mcp_url and anthropic_api_key are required in that case.
+        In RAG-only mode only mcp_url is required (no API key needed).
+        In LLM mode an API key is required unless the provider is ollama.
         """
+        # mcp_url is always required
+        required: dict[str, str] = {"DERIVA_CHATBOT_MCP_URL": self.mcp_url}
+
         if self.auth_enabled:
-            required = {
-                "DERIVA_CHATBOT_MCP_URL": self.mcp_url,
+            required.update({
                 "DERIVA_CHATBOT_CREDENZA_URL": self.credenza_url,
                 "DERIVA_CHATBOT_CLIENT_ID": self.client_id,
                 "DERIVA_CHATBOT_MCP_RESOURCE": self.mcp_resource,
                 "DERIVA_CHATBOT_PUBLIC_URL": self.public_url,
-                "ANTHROPIC_API_KEY": self.anthropic_api_key,
-            }
-        else:
-            required = {
-                "DERIVA_CHATBOT_MCP_URL": self.mcp_url,
-                "ANTHROPIC_API_KEY": self.anthropic_api_key,
-            }
+            })
+
+        tier = self.operating_tier
+        if tier in ("llm", "local") and tier != "local":
+            required["DERIVA_CHATBOT_LLM_API_KEY"] = self.llm_api_key
+
         missing = [k for k, v in required.items() if not v]
         if missing:
             raise ValueError(f"Missing required configuration: {', '.join(missing)}")

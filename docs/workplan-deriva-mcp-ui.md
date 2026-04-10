@@ -1,7 +1,7 @@
 # deriva-mcp-ui Workplan and Design
 
-**Status:** Phases 0-8 complete + post-Phase-8 anonymous mode hardening + schema priming/guide injection (Phases 9-10
-design only)
+**Status:** Phases 0-10 code-complete. Phase 9 design only (not implemented). Phase 10 RAG-only mode
+live-tested and display-polished (2026-04-09). 205 tests, 84% coverage.
 
 **Target repo:** `deriva-mcp-ui`
 
@@ -954,7 +954,7 @@ it and attaches the `Set-Cookie` header to the outgoing response.
 
 ### Phase 10 -- Multi-Provider LLM Support and RAG-Only Mode
 
-**Status:** Design only.
+**Status:** Code-complete, live-tested, and display-polished (2026-04-09). 205 tests, 84% coverage.
 
 ---
 
