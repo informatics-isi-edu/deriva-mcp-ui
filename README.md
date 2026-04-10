@@ -3,7 +3,7 @@
 [![CI Status](https://github.com/informatics-isi-edu/deriva-mcp-ui/actions/workflows/ci.yaml/badge.svg)](https://github.com/informatics-isi-edu/deriva-mcp-ui/actions/workflows/ci.yaml)
 [![Coverage Status](https://coveralls.io/repos/github/informatics-isi-edu/deriva-mcp-ui/badge.svg?branch=main)](https://coveralls.io/github/informatics-isi-edu/deriva-mcp-ui?branch=main)
 
-Browser-based chatbot interface for DERIVA. Wraps Claude and the
+Browser-based chatbot interface for DERIVA. Wraps an LLM and the
 [deriva-mcp-core](https://github.com/informatics-isi-edu/deriva-mcp-core) MCP server
 behind a web frontend, giving end users a natural-language interface to query and manage
 DERIVA catalogs without needing a desktop MCP client.
@@ -11,13 +11,19 @@ DERIVA catalogs without needing a desktop MCP client.
 ## Features
 
 - Standard web login via Credenza (OAuth 2.0 + PKCE -- no token pasting)
-- Streaming responses via Server-Sent Events (Claude's replies appear word-by-word)
-- Full tool-calling loop: Claude invokes DERIVA tools transparently; tool calls are
+- Streaming responses via Server-Sent Events
+- Full tool-calling loop: the LLM invokes DERIVA tools transparently; tool calls are
   shown in collapsible blocks in the UI
-- Two operating modes:
+- Three operating tiers (auto-detected from config, or forced via `DERIVA_CHATBOT_MODE`):
+    - **LLM** -- full tool-calling loop via any LiteLLM-supported provider (Anthropic,
+      OpenAI, Ollama, Azure, etc.)
+    - **RAG-only** -- no API key required; answers directly from indexed documentation
+      and catalog data via the MCP server's RAG subsystem
+    - **Local model** -- full tool-calling via a local Ollama instance
+- Two catalog modes:
     - **Default-catalog** -- anchored to a specific catalog; schema context injected
       automatically on the first turn
-    - **General-purpose** -- user or Claude specifies hostname and catalog ID
+    - **General-purpose** -- user or LLM specifies hostname and catalog ID
 - Conversation history preserved server-side across the browser session and across
   Credenza token re-authentication
 - Multiple session storage backends: memory (default), Redis/Valkey, PostgreSQL, SQLite
@@ -29,7 +35,8 @@ DERIVA catalogs without needing a desktop MCP client.
   instance reachable over HTTP
 - A [Credenza](https://github.com/informatics-isi-edu/credenza) instance for
   authentication
-- An Anthropic API key
+- An LLM API key (Anthropic, OpenAI, etc.) **or** a local Ollama (or similar) instance -- not
+  required for RAG-only mode
 
 ## Installation
 
@@ -60,7 +67,16 @@ All configuration is via environment variables with the `DERIVA_CHATBOT_` prefix
 | `DERIVA_CHATBOT_CLIENT_ID`    | OAuth client ID registered in Credenza                         |
 | `DERIVA_CHATBOT_MCP_RESOURCE` | Resource URI for the MCP server (must match MCP server config) |
 | `DERIVA_CHATBOT_PUBLIC_URL`   | Public HTTPS URL of this service (used as OAuth redirect base) |
-| `ANTHROPIC_API_KEY`           | Anthropic API key                                              |
+
+### LLM provider (optional -- not required for RAG-only mode)
+
+| Variable                      | Default            | Description                                                                |
+|-------------------------------|--------------------|----------------------------------------------------------------------------|
+| `DERIVA_CHATBOT_LLM_API_KEY`  |                    | API key for the configured provider (Anthropic, OpenAI, etc.)              |
+| `DERIVA_CHATBOT_LLM_MODEL`    | `claude-haiku-4-5` | Model identifier (e.g. `claude-haiku-4-5`, `gpt-4o-mini`, `ollama/llama3`) |
+| `DERIVA_CHATBOT_LLM_PROVIDER` |                    | Provider name; auto-detected from model string if omitted                  |
+| `DERIVA_CHATBOT_LLM_API_BASE` |                    | Custom API base URL (required for Ollama and self-hosted endpoints)        |
+| `DERIVA_CHATBOT_MODE`         | `auto`             | `auto`, `llm`, or `rag_only`; forces operating tier                        |
 
 ### Default-catalog mode
 
@@ -74,15 +90,14 @@ Set both variables to anchor the chatbot to a specific catalog:
 
 ### Tuning
 
-| Variable                             | Default            | Description                                                          |
-|--------------------------------------|--------------------|----------------------------------------------------------------------|
-| `DERIVA_CHATBOT_CLAUDE_MODEL`        | `claude-haiku-4-5` | Claude model ID                                                      |
-| `DERIVA_CHATBOT_MAX_HISTORY_TURNS`   | `10`               | Conversation turns retained per session                              |
-| `DERIVA_CHATBOT_MAX_MESSAGE_LENGTH`  | `10000`            | Maximum user message length in characters                            |
-| `DERIVA_CHATBOT_SESSION_TTL`         | `28800`            | Server-side session TTL in seconds (default 8h)                      |
-| `DERIVA_CHATBOT_STORAGE_BACKEND`     | `memory`           | Session backend: `memory`, `redis`, `valkey`, `postgresql`, `sqlite` |
-| `DERIVA_CHATBOT_STORAGE_BACKEND_URL` | --                 | Connection URL for the selected backend                              |
-| `DERIVA_CHATBOT_DEBUG`               | `false`            | Enable debug logging                                                 |
+| Variable                             | Default  | Description                                                          |
+|--------------------------------------|----------|----------------------------------------------------------------------|
+| `DERIVA_CHATBOT_MAX_HISTORY_TURNS`   | `10`     | Conversation turns retained per session                              |
+| `DERIVA_CHATBOT_MAX_MESSAGE_LENGTH`  | `10000`  | Maximum user message length in characters                            |
+| `DERIVA_CHATBOT_SESSION_TTL`         | `28800`  | Server-side session TTL in seconds (default 8h)                      |
+| `DERIVA_CHATBOT_STORAGE_BACKEND`     | `memory` | Session backend: `memory`, `redis`, `valkey`, `postgresql`, `sqlite` |
+| `DERIVA_CHATBOT_STORAGE_BACKEND_URL` |          | Connection URL for the selected backend                              |
+| `DERIVA_CHATBOT_DEBUG`               | `false`  | Enable debug logging                                                 |
 
 Storage URL examples:
 
@@ -123,7 +138,8 @@ deriva-mcp-ui:
     DERIVA_CHATBOT_CLIENT_ID: deriva-mcp-ui
     DERIVA_CHATBOT_MCP_RESOURCE: https://mcp.example.org
     DERIVA_CHATBOT_PUBLIC_URL: https://example.org/chatbot
-    ANTHROPIC_API_KEY: sk-ant-...
+    DERIVA_CHATBOT_LLM_API_KEY: sk-ant-...
+    DERIVA_CHATBOT_LLM_MODEL: claude-haiku-4-5
     DERIVA_CHATBOT_DEFAULT_HOSTNAME: data.example.org
     DERIVA_CHATBOT_DEFAULT_CATALOG_ID: "1"
     DERIVA_CHATBOT_DEFAULT_CATALOG_LABEL: "Example Catalog"
@@ -205,9 +221,9 @@ Browser (HTML + JS)
 deriva-mcp-ui  (FastAPI, port 8001)
   |                    |
   | MCP over HTTP      | HTTPS
-  | (bearer token)     | (Anthropic API)
+  | (bearer token)     | (LLM API -- optional)
   v                    v
-deriva-mcp-core     Claude
+deriva-mcp-core     LLM provider (Anthropic / OpenAI / Ollama / ...)
   |
   | HTTPS
   v
