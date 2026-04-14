@@ -99,6 +99,27 @@ Set both variables to anchor the chatbot to a specific catalog:
 | `DERIVA_CHATBOT_STORAGE_BACKEND_URL` |          | Connection URL for the selected backend                              |
 | `DERIVA_CHATBOT_DEBUG`               | `false`  | Enable debug logging                                                 |
 
+### Networking (Docker / internal hostnames)
+
+| Variable                      | Default | Description                                                                                                  |
+|-------------------------------|---------|--------------------------------------------------------------------------------------------------------------|
+| `DERIVA_CHATBOT_HOSTNAME_MAP` | `{}`    | JSON object mapping public hostnames to internal ones (e.g. `{"localhost":"deriva"}` for Docker deployments) |
+| `DERIVA_CHATBOT_SSL_VERIFY`   | `true`  | Set to `false` to disable TLS certificate verification (useful for self-signed certs in dev/staging)         |
+
+When the chatbot runs inside Docker, `localhost` in `DERIVA_CHATBOT_MCP_URL` and
+`DERIVA_CHATBOT_CREDENZA_URL` resolves to the container itself. Use
+`DERIVA_CHATBOT_HOSTNAME_MAP` to remap the public hostname to the internal Docker
+service name:
+
+```ini
+DERIVA_CHATBOT_HOSTNAME_MAP = {"localhost": "deriva"}
+DERIVA_CHATBOT_SSL_VERIFY = false
+```
+
+This mirrors the `DERIVA_MCP_HOSTNAME_MAP` / `DERIVA_MCP_SSL_VERIFY` pattern used by
+`deriva-mcp-core`. In `deriva-docker`, both variables are populated automatically by
+`generate-env.sh` for localhost deployments.
+
 Storage URL examples:
 
 ```
@@ -162,8 +183,10 @@ labels:
   - "traefik.http.services.chatbot.loadbalancer.server.port=8001"
 ```
 
-Access the UI at `https://your-host/chatbot/`. Note the trailing slash -- the browser
-must include it so relative asset URLs resolve correctly.
+Access the UI at `https://your-host/chatbot` or `https://your-host/chatbot/`. A
+`<base href>` tag is injected automatically from `DERIVA_CHATBOT_PUBLIC_URL`, so
+relative asset URLs resolve correctly regardless of whether the trailing slash is
+present.
 
 ### Apache (VM deployment)
 
@@ -186,8 +209,7 @@ Add an entry to `config/client_registry.json`:
       "authorization_code"
     ],
     "allowed_redirect_uris": [
-      "https://your-host.example.org/chatbot/callback",
-      "http://localhost:8001/callback"
+      "https://your-host.example.org/chatbot/callback"
     ],
     "allowed_resources": [
       "urn:deriva:rest:service:all",

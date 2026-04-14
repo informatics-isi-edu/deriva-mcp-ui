@@ -30,6 +30,7 @@ from typing import Any
 import httpx
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
+from mcp.shared._httpx_utils import create_mcp_http_client
 from mcp.types import TextContent
 
 logger = logging.getLogger(__name__)
@@ -57,7 +58,7 @@ class MCPAuthError(Exception):
 
 
 @contextlib.asynccontextmanager
-async def _connect(mcp_url: str, bearer_token: str | None):
+async def _connect(mcp_url: str, bearer_token: str | None, *, ssl_verify: bool = True):
     """Open a ClientSession to the MCP server and yield it, initialised.
 
     Translates transport-level errors into MCPConnectionError / MCPAuthError
@@ -65,12 +66,27 @@ async def _connect(mcp_url: str, bearer_token: str | None):
 
     When bearer_token is None the Authorization header is omitted, which is
     correct for servers running in allow-anonymous mode.
+
+    ssl_verify=False disables TLS certificate verification, required for
+    internal Docker hostnames whose certificates do not match the public
+    hostname (e.g. "deriva" vs "localhost").
     """
     headers = {"Authorization": f"Bearer {bearer_token}"} if bearer_token else {}
+
+    def _client_factory(
+        headers: dict[str, str] | None = None,
+        timeout: httpx.Timeout | None = None,
+        auth: httpx.Auth | None = None,
+    ) -> httpx.AsyncClient:
+        if ssl_verify:
+            return create_mcp_http_client(headers=headers, timeout=timeout, auth=auth)
+        return httpx.AsyncClient(verify=False, headers=headers or {}, timeout=timeout, auth=auth)
+
     try:
         async with streamablehttp_client(
             mcp_url,
             headers=headers,
+            httpx_client_factory=_client_factory,
         ) as (read, write, _):
             async with ClientSession(read, write) as session:
                 await session.initialize()
@@ -84,7 +100,7 @@ async def _connect(mcp_url: str, bearer_token: str | None):
 
 
 @contextlib.asynccontextmanager
-async def open_session(bearer_token: str | None, mcp_url: str):
+async def open_session(bearer_token: str | None, mcp_url: str, *, ssl_verify: bool = True):
     """Open a reusable MCP session for batching multiple calls.
 
     Usage::
@@ -93,7 +109,7 @@ async def open_session(bearer_token: str | None, mcp_url: str):
             tools = await list_tools(token, url, session=sess)
             result = await call_tool(token, "my_tool", {}, url, session=sess)
     """
-    async with _connect(mcp_url, bearer_token) as session:
+    async with _connect(mcp_url, bearer_token, ssl_verify=ssl_verify) as session:
         yield session
 
 
@@ -132,6 +148,7 @@ async def list_tools(
     mcp_url: str,
     *,
     session: ClientSession | None = None,
+    ssl_verify: bool = True,
 ) -> list[LLMTool]:
     """Return the MCP server's tool list in OpenAI function-calling format.
 
@@ -146,7 +163,7 @@ async def list_tools(
     if session is not None:
         result = await session.list_tools()
     else:
-        async with _connect(mcp_url, bearer_token) as sess:
+        async with _connect(mcp_url, bearer_token, ssl_verify=ssl_verify) as sess:
             result = await sess.list_tools()
 
     tools: list[LLMTool] = []
@@ -169,6 +186,7 @@ async def get_prompt(
     mcp_url: str,
     *,
     session: ClientSession | None = None,
+    ssl_verify: bool = True,
 ) -> str:
     """Fetch an MCP prompt by name and return its text content.
 
@@ -182,7 +200,7 @@ async def get_prompt(
         if session is not None:
             result = await session.get_prompt(name)
         else:
-            async with _connect(mcp_url, bearer_token) as sess:
+            async with _connect(mcp_url, bearer_token, ssl_verify=ssl_verify) as sess:
                 result = await sess.get_prompt(name)
         parts: list[str] = []
         for msg in result.messages:
@@ -205,6 +223,7 @@ async def call_tool(
     mcp_url: str,
     *,
     session: ClientSession | None = None,
+    ssl_verify: bool = True,
 ) -> str:
     """Invoke a tool on the MCP server and return its output as a string.
 
@@ -221,7 +240,7 @@ async def call_tool(
     if session is not None:
         result = await session.call_tool(name, arguments)
     else:
-        async with _connect(mcp_url, bearer_token) as sess:
+        async with _connect(mcp_url, bearer_token, ssl_verify=ssl_verify) as sess:
             result = await sess.call_tool(name, arguments)
 
     parts: list[str] = []

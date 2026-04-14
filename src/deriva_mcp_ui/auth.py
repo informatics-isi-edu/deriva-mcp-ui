@@ -277,8 +277,8 @@ async def callback(request: Request, code: str = "", state: str = "", error: str
         raise HTTPException(status_code=400, detail="State mismatch -- possible CSRF")
 
     # Exchange code for bearer token
-    token_url = f"{settings.credenza_url}/token"
-    async with httpx.AsyncClient() as client:
+    token_url = f"{settings.remap_url(settings.credenza_url)}/token"
+    async with httpx.AsyncClient(verify=settings.ssl_verify) as client:
         resp = await client.post(
             token_url,
             data={
@@ -377,9 +377,9 @@ async def logout(request: Request) -> Response:
     redirect_target = f"{settings.public_url}/"
     if bearer_token:
         try:
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(verify=settings.ssl_verify) as client:
                 resp = await client.get(
-                    f"{settings.credenza_url}/logout",
+                    f"{settings.remap_url(settings.credenza_url)}/logout",
                     headers={"Authorization": f"Bearer {bearer_token}"},
                     follow_redirects=False,
                     timeout=5,
@@ -452,8 +452,8 @@ async def _fetch_credenza_session(bearer_token: str, settings: Settings) -> dict
     TODO: replace with GET /userinfo once that endpoint is implemented in Credenza
     (see credenza workplan Phase 9).
     """
-    session_url = f"{settings.credenza_url}/session"
-    async with httpx.AsyncClient() as client:
+    session_url = f"{settings.remap_url(settings.credenza_url)}/session"
+    async with httpx.AsyncClient(verify=settings.ssl_verify) as client:
         resp = await client.get(session_url, headers={"Authorization": f"Bearer {bearer_token}"})
     if resp.status_code != 200:
         return {}

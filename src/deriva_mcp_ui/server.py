@@ -8,6 +8,7 @@ import json
 import logging
 import pathlib
 import time
+from urllib.parse import urlparse
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -349,6 +350,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         page = page.replace("{{HEADER_TITLE}}", html.escape(s.header_title))
         logo_url = html.escape(s.header_logo_url) if s.header_logo_url else ""
         page = page.replace("{{HEADER_LOGO_URL}}", logo_url)
+        # Inject <base href="..."> so relative asset paths resolve correctly
+        # whether the browser URL has a trailing slash or not.
+        if s.public_url:
+            base_path = urlparse(s.public_url).path.rstrip("/") + "/"
+            page = page.replace("<head>", f'<head><base href="{html.escape(base_path)}">', 1)
         return HTMLResponse(page)
 
     return app

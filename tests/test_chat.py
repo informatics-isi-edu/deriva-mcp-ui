@@ -332,7 +332,7 @@ async def test_run_chat_turn_with_tool_call():
                 chunks.append(chunk)
 
     mock_ct.assert_called_once_with(
-        "tok", "get_entities", {"hostname": "h", "catalog_id": "1"}, "http://mcp:8000"
+        "tok", "get_entities", {"hostname": "h", "catalog_id": "1"}, "http://mcp:8000", ssl_verify=True
     )
     assert "Done" in _collect_text(chunks)
     tool_evts = _collect_tool_events(chunks)

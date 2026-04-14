@@ -15,6 +15,33 @@ def test_defaults():
     assert s.debug is False
     assert s.llm_provider == ""
     assert s.llm_api_base == ""
+    assert s.hostname_map == {}
+    assert s.ssl_verify is True
+
+
+def test_remap_url_no_map():
+    s = Settings()
+    assert s.remap_url("https://localhost/authn") == "https://localhost/authn"
+
+
+def test_remap_url_with_map():
+    s = Settings(hostname_map={"localhost": "deriva"})
+    assert s.remap_url("https://localhost/authn") == "https://deriva/authn"
+
+
+def test_remap_url_preserves_port():
+    s = Settings(hostname_map={"localhost": "deriva"})
+    assert s.remap_url("https://localhost:8080/authn") == "https://deriva:8080/authn"
+
+
+def test_remap_url_no_match():
+    s = Settings(hostname_map={"localhost": "deriva"})
+    assert s.remap_url("https://other.example.com/authn") == "https://other.example.com/authn"
+
+
+def test_remap_url_mcp_url():
+    s = Settings(hostname_map={"localhost": "deriva"})
+    assert s.remap_url("https://localhost/mcp") == "https://deriva/mcp"
 
 
 def test_default_catalog_mode_off():

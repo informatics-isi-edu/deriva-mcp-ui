@@ -233,12 +233,12 @@ async def _fetch_guides(session: Session, settings: Settings, *, mcp_session=Non
     opening a new connection per prompt. Returns an empty string if none
     succeed.
     """
-    mcp_url = settings.mcp_url
+    mcp_url = settings.remap_url(settings.mcp_url)
     token = session.bearer_token
 
     parts: list[str] = []
     for name in _GUIDE_PROMPT_NAMES:
-        result = await get_prompt(token, name, mcp_url, session=mcp_session)
+        result = await get_prompt(token, name, mcp_url, session=mcp_session, ssl_verify=settings.ssl_verify)
         if result:
             parts.append(result)
         else:
@@ -275,13 +275,13 @@ async def _prime_ermrest_syntax(session: Session, settings: Settings, *, mcp_ses
     concatenated text. Returns an empty string if RAG is unavailable or has
     no relevant docs indexed.
     """
-    mcp_url = settings.mcp_url
+    mcp_url = settings.remap_url(settings.mcp_url)
     token = session.bearer_token
 
     results: list[str | Exception] = []
     for q in _ERMREST_SYNTAX_QUERIES:
         try:
-            r = await call_tool(token, "rag_search", {"query": q, "limit": 5}, mcp_url, session=mcp_session)
+            r = await call_tool(token, "rag_search", {"query": q, "limit": 5}, mcp_url, session=mcp_session, ssl_verify=settings.ssl_verify)
             results.append(r)
         except Exception as exc:
             results.append(exc)
@@ -338,7 +338,7 @@ async def _prime_schema(session: Session, settings: Settings, *, mcp_session=Non
     """
     hostname = settings.default_hostname
     catalog_id = settings.default_catalog_id
-    mcp_url = settings.mcp_url
+    mcp_url = settings.remap_url(settings.mcp_url)
     token = session.bearer_token
 
     # Step 1: get schema names
@@ -349,6 +349,7 @@ async def _prime_schema(session: Session, settings: Settings, *, mcp_session=Non
             {"hostname": hostname, "catalog_id": catalog_id},
             mcp_url,
             session=mcp_session,
+            ssl_verify=settings.ssl_verify,
         )
         if not info_text or info_text.startswith("Error:"):
             logger.warning("Schema priming: get_catalog_info failed: %s", info_text[:200] if info_text else "empty")
@@ -377,6 +378,7 @@ async def _prime_schema(session: Session, settings: Settings, *, mcp_session=Non
                 {"hostname": hostname, "catalog_id": catalog_id, "schema": schema_name},
                 mcp_url,
                 session=mcp_session,
+                ssl_verify=settings.ssl_verify,
             )
             if schema_text and not schema_text.startswith("Error:"):
                 if parts and total_chars + len(schema_text) > _SCHEMA_PRIMING_MAX_CHARS:
@@ -533,7 +535,7 @@ async def _rag_only_response(
     Yields the same event dict format as run_chat_turn so the SSE layer and
     UI are unchanged.
     """
-    mcp_url = settings.mcp_url
+    mcp_url = settings.remap_url(settings.mcp_url)
     token = session.bearer_token
 
     # If the message is purely a show-all command (nothing meaningful after
@@ -565,6 +567,7 @@ async def _rag_only_response(
                     "catalog_id": settings.default_catalog_id,
                 },
                 mcp_url,
+                ssl_verify=settings.ssl_verify,
             )
         except Exception as exc:
             logger.debug("RAG-only schema lookup failed: %s", exc)
@@ -580,6 +583,7 @@ async def _rag_only_response(
             "rag_search",
             {"query": effective_query, "limit": _RAG_SEARCH_LIMIT},
             mcp_url,
+            ssl_verify=settings.ssl_verify,
         )
         if result_text and not result_text.startswith("Error:"):
             rag_results = json.loads(result_text)
@@ -596,6 +600,7 @@ async def _rag_only_response(
                 "rag_search",
                 {"query": key_terms, "limit": _RAG_SEARCH_LIMIT},
                 mcp_url,
+                ssl_verify=settings.ssl_verify,
             )
             if term_text and not term_text.startswith("Error:"):
                 term_results = json.loads(term_text)
@@ -614,6 +619,7 @@ async def _rag_only_response(
                 "rag_search",
                 {"query": effective_query, "limit": 5, "doc_type": _web_doc_type},
                 mcp_url,
+                ssl_verify=settings.ssl_verify,
             )
             if _web_text and not _web_text.startswith("Error:"):
                 _web_results = json.loads(_web_text)
@@ -1130,7 +1136,7 @@ async def run_chat_turn(
             yield event
         return
 
-    mcp_url = settings.mcp_url
+    mcp_url = settings.remap_url(settings.mcp_url)
 
     # First turn: open a single MCP session and batch all priming calls
     # (list_tools, guide prompts, schema, ERMrest syntax) on it to avoid
@@ -1141,9 +1147,9 @@ async def run_chat_turn(
 
     if needs_tools or needs_priming:
         yield {"type": "status", "message": "Connecting to server..."}
-        async with open_session(session.bearer_token, mcp_url) as mcp_sess:
+        async with open_session(session.bearer_token, mcp_url, ssl_verify=settings.ssl_verify) as mcp_sess:
             if needs_tools:
-                session.tools = await list_tools(session.bearer_token, mcp_url, session=mcp_sess)
+                session.tools = await list_tools(session.bearer_token, mcp_url, session=mcp_sess, ssl_verify=settings.ssl_verify)
                 logger.debug("Cached %d tools for session %s", len(session.tools), session.user_id)
 
             if needs_priming:
@@ -1301,7 +1307,7 @@ async def run_chat_turn(
             yield {"type": "tool_start", "name": tc_name, "input": tc_args}
             try:
                 result_text = await call_tool(
-                    session.bearer_token, tc_name, tc_args, mcp_url
+                    session.bearer_token, tc_name, tc_args, mcp_url, ssl_verify=settings.ssl_verify
                 )
             except MCPAuthError:
                 raise

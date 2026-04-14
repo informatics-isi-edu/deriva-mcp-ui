@@ -5,7 +5,7 @@ All configuration is via DERIVA_CHATBOT_* environment variables.
 
 from __future__ import annotations
 
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -25,6 +25,16 @@ class Settings(BaseSettings):
     client_id: str = ""
     mcp_resource: str = ""
     public_url: str = ""
+
+    # Hostname remapping for server-side Credenza calls (token exchange, session, logout).
+    # JSON object mapping public hostnames to internal Docker hostnames, e.g.
+    # {"localhost":"deriva"}.  Mirrors DERIVA_MCP_HOSTNAME_MAP in deriva-mcp-core.
+    hostname_map: dict[str, str] = Field(default_factory=dict)
+
+    # Whether to verify TLS certificates on server-side Credenza calls.
+    # Set to false for localhost where the dev CA cert does not cover the
+    # internal Docker hostname.
+    ssl_verify: bool = True
 
     # LLM provider configuration
     llm_api_key: str = Field(default="")
@@ -61,6 +71,27 @@ class Settings(BaseSettings):
     # Access logging (uvicorn request log)
     access_logfile_path: str = "deriva-mcp-ui-access.log"
     access_use_syslog: bool = False
+
+    def remap_url(self, url: str) -> str:
+        """Rewrite url's hostname using hostname_map.
+
+        Replaces the hostname component of url with the mapped value if a
+        matching entry exists in hostname_map. Port is preserved. Useful for
+        redirecting calls that use a public hostname (e.g. "localhost") to the
+        corresponding internal network alias (e.g. "deriva") when running
+        inside a Docker container where the public hostname resolves to the
+        container itself.
+
+        Returns url unchanged if no mapping applies.
+        """
+        if not self.hostname_map:
+            return url
+        parsed = urlparse(url)
+        new_host = self.hostname_map.get(parsed.hostname or "", "")
+        if not new_host:
+            return url
+        netloc = f"{new_host}:{parsed.port}" if parsed.port else new_host
+        return urlunparse(parsed._replace(netloc=netloc))
 
     @property
     def auth_enabled(self) -> bool:
