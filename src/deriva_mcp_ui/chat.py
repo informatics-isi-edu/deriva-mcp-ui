@@ -752,8 +752,17 @@ def _format_rag_response(
                 beyond_cap.append(_s)
 
         # Hide sources below relevance threshold; cap-overflow goes to hidden too.
-        shown_sources = [s for s in within_cap if source_scores[s] >= _HIGH_RELEVANCE_THRESHOLD]
-        hidden_sources = [s for s in within_cap if source_scores[s] < _HIGH_RELEVANCE_THRESHOLD] + beyond_cap
+        # If every within-cap source falls below the threshold, show them all
+        # rather than presenting an empty result set -- the threshold only
+        # filters when there is at least one source above it.
+        above = [s for s in within_cap if source_scores[s] >= _HIGH_RELEVANCE_THRESHOLD]
+        below = [s for s in within_cap if source_scores[s] < _HIGH_RELEVANCE_THRESHOLD]
+        if above:
+            shown_sources = above
+            hidden_sources = below + beyond_cap
+        else:
+            shown_sources = within_cap
+            hidden_sources = beyond_cap
 
     # Render each source into a per-type bucket for grouped output.
     # Groups are emitted in the order their first member appears in shown_sources.

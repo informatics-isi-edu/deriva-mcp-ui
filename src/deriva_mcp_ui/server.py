@@ -207,11 +207,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         client_block = cred.get("client") or {}
         display_name = (
             "Anonymous"
-            if not s.auth_enabled
+            if session.bearer_token is None
             else (_extract_display_name(cred) or session.user_id)
         )
         full_name = cred.get("full_name") or client_block.get("full_name") or ""
         email = cred.get("email") or client_block.get("email") or ""
+        is_anonymous = session.bearer_token is None
         return JSONResponse(
             {
                 "user_id": session.user_id,
@@ -223,6 +224,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "label": s.default_catalog_label or s.default_hostname or "",
                 "hostname": s.default_hostname or "",
                 "credenza_session": cred,
+                "login_available": s.credenza_configured and is_anonymous,
             }
         )
 

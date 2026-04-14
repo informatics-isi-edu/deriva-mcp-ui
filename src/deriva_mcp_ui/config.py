@@ -54,6 +54,11 @@ class Settings(BaseSettings):
     header_title: str = "DERIVA Data Assistant"
     header_logo_url: str = "static/deriva-logo.png"
 
+    # When True, unauthenticated users receive an anonymous session even when
+    # Credenza is configured.  Authenticated login is still available via /login.
+    # When False (default), Credenza presence forces login.
+    allow_anonymous: bool = False
+
     # Tuning
     max_history_turns: int = 10
     max_message_length: int = 10000
@@ -94,9 +99,14 @@ class Settings(BaseSettings):
         return urlunparse(parsed._replace(netloc=netloc))
 
     @property
-    def auth_enabled(self) -> bool:
-        """True when Credenza is configured and the OAuth login flow is active."""
+    def credenza_configured(self) -> bool:
+        """True when Credenza is configured and the OAuth login flow is available."""
         return bool(self.credenza_url)
+
+    @property
+    def auth_enabled(self) -> bool:
+        """True when login is required -- Credenza configured and anonymous access not allowed."""
+        return self.credenza_configured and not self.allow_anonymous
 
     @property
     def operating_tier(self) -> str:
@@ -129,7 +139,7 @@ class Settings(BaseSettings):
         # mcp_url is always required
         required: dict[str, str] = {"DERIVA_CHATBOT_MCP_URL": self.mcp_url}
 
-        if self.auth_enabled:
+        if self.credenza_configured:
             required.update({
                 "DERIVA_CHATBOT_CREDENZA_URL": self.credenza_url,
                 "DERIVA_CHATBOT_CLIENT_ID": self.client_id,

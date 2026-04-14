@@ -562,6 +562,87 @@ async def test_anonymous_logout_clears_cookie(anon_app_and_store):
     assert await store.get(user_session_key(user_id)) is None
 
 
+# ---------------------------------------------------------------------------
+# Tests: allow_anonymous=True with Credenza configured
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def optional_login_app_and_store():
+    """Credenza configured but login is optional (allow_anonymous=True)."""
+    settings = _test_settings(allow_anonymous=True)
+    app = create_app(settings)
+    store = MemorySessionStore(ttl=settings.session_ttl)
+    app.state.store = store
+    return app, store
+
+
+def test_allow_anonymous_unauthenticated_gets_anonymous_session(optional_login_app_and_store):
+    """Unauthenticated request in allow_anonymous mode gets an anonymous session."""
+    app, _ = optional_login_app_and_store
+    client = TestClient(app, follow_redirects=False)
+    resp = client.get("/session-info")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["display_name"] == "Anonymous"
+    assert data["user_id"].startswith("anonymous/")
+
+
+def test_allow_anonymous_login_starts_oauth(optional_login_app_and_store):
+    """/login in allow_anonymous mode still starts the OAuth flow (Credenza is configured)."""
+    app, _ = optional_login_app_and_store
+    client = TestClient(app, follow_redirects=False)
+    resp = client.get("/login")
+    assert resp.status_code == 302
+    assert "credenza" in resp.headers["location"]
+    assert "deriva_chatbot_pkce" in resp.cookies
+
+
+@pytest.mark.asyncio
+async def test_allow_anonymous_authenticated_user_gets_real_session(optional_login_app_and_store):
+    """Authenticated bearer token in allow_anonymous mode resolves the real session."""
+    app, store = optional_login_app_and_store
+    bearer = "tok-optional-login"
+    now = time.time()
+    await store.set(user_session_key("carol"), Session(
+        user_id="carol", bearer_token=bearer, created_at=now, last_active=now,
+    ))
+    await store.set(_token_key(bearer), Session(
+        user_id="carol", bearer_token=bearer, created_at=now, last_active=now,
+    ))
+    client = TestClient(app, follow_redirects=False)
+    resp = client.get("/session-info", headers={"Cookie": f"deriva_chatbot_session={bearer}"})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["user_id"] == "carol"
+    assert data["display_name"] != "Anonymous"
+
+
+@pytest.mark.asyncio
+async def test_allow_anonymous_logout_with_anon_session_clears_cookie(optional_login_app_and_store):
+    """Logout of an anonymous session in allow_anonymous mode clears the anon cookie."""
+    app, store = optional_login_app_and_store
+    client = TestClient(app, follow_redirects=False)
+    resp1 = client.get("/session-info")
+    anon_id = resp1.cookies["deriva_chatbot_anon"]
+    user_id = resp1.json()["user_id"]
+    resp2 = client.get("/logout", cookies={"deriva_chatbot_anon": anon_id})
+    assert resp2.status_code == 302
+    assert await store.get(user_session_key(user_id)) is None
+
+
+def test_allow_anonymous_validate_still_requires_credenza_fields():
+    """validate_for_http() requires full Credenza config even when allow_anonymous=True."""
+    s = Settings(
+        mcp_url="http://mcp:8000",
+        llm_api_key="sk-test",
+        credenza_url="https://credenza.example.org",
+        allow_anonymous=True,
+    )
+    with pytest.raises(ValueError, match="DERIVA_CHATBOT_CLIENT_ID"):
+        s.validate_for_http()
+
+
 def test_config_no_credenza_url_skips_credenza_validation():
     """No credenza_url: validate_for_http() does not require Credenza fields."""
     s = Settings(

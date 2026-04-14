@@ -145,6 +145,40 @@ def test_session_info_anonymous_mode():
     assert data["full_name"] == ""
     assert data["email"] == ""
     assert data["hostname"] == ""
+    # No Credenza configured -- login is not available
+    assert data["login_available"] is False
+
+
+def test_session_info_login_available_when_allow_anonymous_and_no_bearer():
+    """Anonymous session with Credenza configured and allow_anonymous=True: login_available=True."""
+    settings = _test_settings(allow_anonymous=True)
+    app = create_app(settings)
+    store = MemorySessionStore(ttl=settings.session_ttl)
+    app.state.store = store
+
+    now = time.time()
+    session = Session(user_id="anonymous/abc", created_at=now, last_active=now)
+    app.dependency_overrides[require_session] = lambda: session
+
+    client = TestClient(app)
+    data = client.get("/session-info").json()
+    assert data["login_available"] is True
+
+
+def test_session_info_login_not_available_when_authenticated():
+    """Authenticated session: login_available=False regardless of allow_anonymous."""
+    settings = _test_settings(allow_anonymous=True)
+    app = create_app(settings)
+    store = MemorySessionStore(ttl=settings.session_ttl)
+    app.state.store = store
+
+    now = time.time()
+    session = Session(user_id="alice", bearer_token="tok", created_at=now, last_active=now)
+    app.dependency_overrides[require_session] = lambda: session
+
+    client = TestClient(app)
+    data = client.get("/session-info").json()
+    assert data["login_available"] is False
 
 
 def test_session_info_includes_operating_mode():

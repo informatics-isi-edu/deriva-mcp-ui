@@ -130,24 +130,23 @@ async def require_session(request: Request, response: Response) -> Session:
     settings: Settings = request.app.state.settings
     store = request.app.state.store
 
-    if not settings.auth_enabled:
-        return await _get_or_create_anonymous_session(request, response, settings, store)
+    # When Credenza is configured, always try the bearer token first so that
+    # an authenticated user in allow_anonymous mode gets their real session.
+    if settings.credenza_configured:
+        bearer_token = _get_session_id(request, settings)
+        if bearer_token is not None:
+            tok_entry = await store.get(_token_key(bearer_token))
+            if tok_entry is not None:
+                session = await store.get(user_session_key(tok_entry.user_id))
+                if session is not None:
+                    session.last_active = time.time()
+                    await store.set(user_session_key(session.user_id), session)
+                    return session
+        # No valid bearer token -- enforce login or fall through to anonymous.
+        if settings.auth_enabled:
+            raise HTTPException(status_code=401, detail="Not authenticated")
 
-    bearer_token = _get_session_id(request, settings)
-    if bearer_token is None:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-
-    tok_entry = await store.get(_token_key(bearer_token))
-    if tok_entry is None:
-        raise HTTPException(status_code=401, detail="Session expired")
-
-    session = await store.get(user_session_key(tok_entry.user_id))
-    if session is None:
-        raise HTTPException(status_code=401, detail="Session expired")
-
-    session.last_active = time.time()
-    await store.set(user_session_key(session.user_id), session)
-    return session
+    return await _get_or_create_anonymous_session(request, response, settings, store)
 
 
 async def _get_or_create_anonymous_session(
@@ -217,7 +216,7 @@ async def login(request: Request) -> Response:
     """
     settings: Settings = request.app.state.settings
 
-    if not settings.auth_enabled:
+    if not settings.credenza_configured:
         return RedirectResponse("/", status_code=302)
 
     verifier = _generate_code_verifier()
@@ -351,7 +350,9 @@ async def logout(request: Request) -> Response:
     settings: Settings = request.app.state.settings
     store = request.app.state.store
 
-    if not settings.auth_enabled:
+    bearer_token = _get_session_id(request, settings)
+    is_anonymous = bearer_token is None or not settings.credenza_configured
+    if is_anonymous:
         anon_id = request.cookies.get(ANON_COOKIE_NAME)
         if anon_id:
             session = await store.get(user_session_key(f"anonymous/{anon_id}"))
@@ -362,7 +363,6 @@ async def logout(request: Request) -> Response:
         response.delete_cookie(ANON_COOKIE_NAME, path=f"{settings.public_url}/", httponly=True, samesite="lax")
         return response
 
-    bearer_token = _get_session_id(request, settings)
     if bearer_token:
         tok_entry = await store.get(_token_key(bearer_token))
         if tok_entry:

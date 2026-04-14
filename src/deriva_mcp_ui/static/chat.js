@@ -81,6 +81,13 @@
       return;
     }
 
+    // When login is available (Credenza configured, current session is anonymous)
+    // show "Log in" instead of "Log out" so the user knows they can authenticate.
+    if (info.login_available) {
+      logoutLink.textContent = "Log in";
+      logoutLink.href = "login";
+    }
+
     // User identity -- show display_name with hover tooltip for full details
     var shortName = info.display_name || info.user_id || "";
     userLabel.textContent = shortName;

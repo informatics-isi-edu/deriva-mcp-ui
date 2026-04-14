@@ -1105,6 +1105,20 @@ def test_format_rag_response_threshold_hides_low_scores():
     assert "show all results" in resp
 
 
+def test_format_rag_response_all_below_threshold_shown_anyway():
+    """When every result is below the threshold, show them all rather than returning nothing."""
+    results = [
+        {"text": "Moderately related content about catalog exports.", "source": "a.md", "score": 0.42},
+        {"text": "Somewhat related content about data models.", "source": "b.md", "score": 0.38},
+    ]
+    resp = _format_rag_response("what is ERMrest?", results)
+    assert "#### **a.md** (relevance: 0.42)" in resp
+    assert "#### **b.md** (relevance: 0.38)" in resp
+    # No hidden-sources note since everything was shown
+    assert "additional source" not in resp
+    assert "show all results" not in resp
+
+
 def test_format_rag_response_show_all_includes_low_scores():
     """show_all=True renders sources below the relevance threshold."""
     results = [
