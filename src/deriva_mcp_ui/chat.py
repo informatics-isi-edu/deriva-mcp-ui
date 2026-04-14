@@ -405,10 +405,11 @@ async def _prime_schema(session: Session, settings: Settings, *, mcp_session=Non
 # ---------------------------------------------------------------------------
 
 # Maximum number of RAG results to request per query.
-# Fetch more than we display so per-type capping has headroom to find
-# lower-ranking results from under-represented source types (e.g. web sources
-# when many high-scoring dataset records dominate the top of the list).
-_RAG_SEARCH_LIMIT = 30
+# Fetch more chunks than we display so per-type capping has headroom to find
+# lower-ranking results from under-represented source types.  No LLM context
+# window to worry about in RAG-only mode, so retrieve more for better
+# per-source field coverage (project/phenotype alongside the title chunk).
+_RAG_SEARCH_LIMIT = 100
 
 # Per-source-type cap: prevents one high-scoring type (e.g. enriched dataset records)
 # from consuming all result slots and hiding lower-scoring results of other types.
@@ -575,6 +576,8 @@ async def _rag_only_response(
     # RAG search -- run the full question as the primary query, then
     # extract technical key terms and run a focused secondary query to
     # catch specific API/concept docs that the broad search may miss.
+    # Use a higher limit in RAG-only mode: no LLM context window cost, and
+    # more chunks means better per-source field coverage.
     yield {"type": "status", "message": "Searching documentation..."}
     rag_results: list[dict[str, Any]] = []
     try:
