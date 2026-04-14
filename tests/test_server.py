@@ -214,6 +214,108 @@ def test_session_info_operating_mode_rag_only():
 
 
 # ---------------------------------------------------------------------------
+# /rag-mode -- per-session RAG-only toggle
+# ---------------------------------------------------------------------------
+
+
+def test_rag_toggle_available_in_llm_mode():
+    """rag_toggle_available=True in LLM tier with allow_rag_toggle=True (default)."""
+    settings = _test_settings()
+    app = create_app(settings)
+    app.state.store = MemorySessionStore(ttl=settings.session_ttl)
+    now = time.time()
+    session = Session(user_id="alice", bearer_token="tok", created_at=now, last_active=now)
+    app.dependency_overrides[require_session] = lambda: session
+    data = TestClient(app).get("/session-info").json()
+    assert data["rag_toggle_available"] is True
+    assert data["rag_mode_active"] is False
+
+
+def test_rag_toggle_not_available_when_disabled_by_config():
+    """rag_toggle_available=False when allow_rag_toggle=False."""
+    settings = _test_settings(allow_rag_toggle=False)
+    app = create_app(settings)
+    app.state.store = MemorySessionStore(ttl=settings.session_ttl)
+    now = time.time()
+    session = Session(user_id="alice", bearer_token="tok", created_at=now, last_active=now)
+    app.dependency_overrides[require_session] = lambda: session
+    data = TestClient(app).get("/session-info").json()
+    assert data["rag_toggle_available"] is False
+
+
+def test_rag_toggle_not_available_in_rag_only_tier():
+    """rag_toggle_available=False when server is already rag_only tier."""
+    settings = Settings(mcp_url="http://mcp", mode="rag_only")
+    app = create_app(settings)
+    app.state.store = MemorySessionStore(ttl=settings.session_ttl)
+    now = time.time()
+    session = Session(user_id="anon", created_at=now, last_active=now)
+    app.dependency_overrides[require_session] = lambda: session
+    data = TestClient(app).get("/session-info").json()
+    assert data["rag_toggle_available"] is False
+    assert data["rag_mode_active"] is True
+
+
+@pytest.mark.asyncio
+async def test_set_rag_mode_enables_override():
+    """POST /rag-mode {enabled: true} sets rag_only_override on the session."""
+    settings = _test_settings()
+    app = create_app(settings)
+    store = MemorySessionStore(ttl=settings.session_ttl)
+    app.state.store = store
+    now = time.time()
+    session = Session(user_id="alice", bearer_token="tok", created_at=now, last_active=now)
+    await store.set(user_session_key("alice"), session)
+    app.dependency_overrides[require_session] = lambda: session
+
+    client = TestClient(app)
+    resp = client.post("/rag-mode", json={"enabled": True})
+    assert resp.status_code == 200
+    assert resp.json()["rag_mode_active"] is True
+
+    saved = await store.get(user_session_key("alice"))
+    assert saved is not None
+    assert saved.rag_only_override is True
+
+
+@pytest.mark.asyncio
+async def test_set_rag_mode_disables_override():
+    """POST /rag-mode {enabled: false} clears rag_only_override."""
+    settings = _test_settings()
+    app = create_app(settings)
+    store = MemorySessionStore(ttl=settings.session_ttl)
+    app.state.store = store
+    now = time.time()
+    session = Session(user_id="alice", bearer_token="tok", created_at=now, last_active=now,
+                      rag_only_override=True)
+    await store.set(user_session_key("alice"), session)
+    app.dependency_overrides[require_session] = lambda: session
+
+    client = TestClient(app)
+    resp = client.post("/rag-mode", json={"enabled": False})
+    assert resp.json()["rag_mode_active"] is False
+
+    saved = await store.get(user_session_key("alice"))
+    assert saved is not None
+    assert saved.rag_only_override is False
+
+
+def test_set_rag_mode_ignored_when_toggle_disabled():
+    """POST /rag-mode is ignored when allow_rag_toggle=False."""
+    settings = _test_settings(allow_rag_toggle=False)
+    app = create_app(settings)
+    store = MemorySessionStore(ttl=settings.session_ttl)
+    app.state.store = store
+    now = time.time()
+    session = Session(user_id="alice", bearer_token="tok", created_at=now, last_active=now)
+    app.dependency_overrides[require_session] = lambda: session
+
+    resp = TestClient(app).post("/rag-mode", json={"enabled": True})
+    assert resp.status_code == 200
+    assert resp.json()["rag_mode_active"] is False
+
+
+# ---------------------------------------------------------------------------
 # /history -- GET and DELETE
 # ---------------------------------------------------------------------------
 

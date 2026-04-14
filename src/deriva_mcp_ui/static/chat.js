@@ -32,6 +32,7 @@
   const gpCatalogId  = document.getElementById("gp-catalog-id");
   const catalogTitle    = document.getElementById("catalog-title");
   const clearHistoryBtn = document.getElementById("clear-history-btn");
+  const ragToggleBtn    = document.getElementById("rag-toggle-btn");
   const searchBanner    = document.getElementById("search-mode-banner");
   const userLabel       = document.getElementById("user-label");
   const logoutLink      = document.getElementById("logout-link");
@@ -119,8 +120,34 @@
       catalogBar.style.display = "flex";
     }
 
-    if (info.operating_mode === "rag_only") {
+    if (info.rag_mode_active) {
       searchBanner.style.display = "block";
+    }
+
+    if (info.rag_toggle_available) {
+      ragToggleBtn.style.display = "inline-block";
+      if (info.rag_mode_active) {
+        ragToggleBtn.classList.add("rag-active");
+      }
+      ragToggleBtn.addEventListener("click", async function () {
+        var enabling = !ragToggleBtn.classList.contains("rag-active");
+        try {
+          var r = await fetch("rag-mode", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ enabled: enabling }),
+          });
+          if (!r.ok) return;
+          var data = await r.json();
+          if (data.rag_mode_active) {
+            ragToggleBtn.classList.add("rag-active");
+            searchBanner.style.display = "block";
+          } else {
+            ragToggleBtn.classList.remove("rag-active");
+            searchBanner.style.display = "none";
+          }
+        } catch { /* ignore network errors */ }
+      });
     }
 
     // Load conversation history from previous sessions

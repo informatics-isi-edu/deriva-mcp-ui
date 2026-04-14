@@ -30,6 +30,9 @@ class Session:
     primed_schema: str = ""
     primed_guides: str = ""
     primed_ermrest: str = ""
+    # Per-session RAG-only override: when True, bypass LLM even if the server
+    # is configured for LLM tier.
+    rag_only_override: bool = False
 
     def to_json(self) -> str:
         return json.dumps(
@@ -48,6 +51,7 @@ class Session:
                 "primed_schema": self.primed_schema,
                 "primed_guides": self.primed_guides,
                 "primed_ermrest": self.primed_ermrest,
+                "rag_only_override": self.rag_only_override,
             }
         )
 
@@ -69,6 +73,7 @@ class Session:
             primed_schema=d.get("primed_schema", ""),
             primed_guides=d.get("primed_guides", ""),
             primed_ermrest=d.get("primed_ermrest", ""),
+            rag_only_override=d.get("rag_only_override", False),
         )
 
 

@@ -1246,6 +1246,38 @@ async def test_run_chat_turn_rag_only_routing():
 
 
 @pytest.mark.asyncio
+async def test_rag_only_override_on_session_routes_to_rag():
+    """Session rag_only_override=True routes to RAG path even in LLM tier."""
+    from deriva_mcp_ui.config import Settings as _S
+    s = _S(mcp_url="http://mcp:8000", llm_api_key="sk-test",
+           default_hostname="facebase.org", default_catalog_id="1",
+           max_history_turns=5)
+    assert s.operating_tier == "llm"
+
+    sess = _session()
+    sess.rag_only_override = True
+
+    rag_results = json.dumps([
+        {"text": "You can query data using the entity browser.", "source": "guide.md", "score": 0.8},
+    ])
+
+    async def _mock_call_tool(token, name, args, url, **kw):
+        if name == "rag_search":
+            return rag_results
+        if name == "get_catalog_info":
+            return "catalog info"
+        return ""
+
+    with patch("deriva_mcp_ui.chat.call_tool", AsyncMock(side_effect=_mock_call_tool)):
+        events = []
+        async for ev in run_chat_turn("how do I query data?", sess, s):
+            events.append(ev)
+
+    text = _collect_text(events)
+    assert "entity browser" in text
+
+
+@pytest.mark.asyncio
 async def test_rag_only_schema_lookup_on_schema_question():
     """RAG-only mode also calls get_catalog_info when question mentions tables."""
     s = _rag_settings()

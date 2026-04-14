@@ -644,9 +644,6 @@ def _split_sentences(text: str) -> list[str]:
     return re.split(r"(?<!\d)[.!?]+(?!\d)(?!\s*[a-z])", text)
 
 
-
-
-
 def _format_rag_response(
     question: str,
     results: list[dict[str, Any]],
@@ -1139,8 +1136,10 @@ async def run_chat_turn(
 
     Raises MCPAuthError if the MCP server rejects the bearer token.
     """
-    # RAG-only mode: bypass the LLM loop entirely
-    if settings.operating_tier == "rag_only":
+    # RAG-only mode: bypass the LLM loop entirely.
+    # Applies when the server tier is rag_only OR the user has toggled the
+    # per-session override (only reachable when allow_rag_toggle is True).
+    if settings.operating_tier == "rag_only" or session.rag_only_override:
         async for event in _rag_only_response(user_message, session, settings):
             yield event
         return

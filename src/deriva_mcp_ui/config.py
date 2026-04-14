@@ -59,6 +59,11 @@ class Settings(BaseSettings):
     # When False (default), Credenza presence forces login.
     allow_anonymous: bool = False
 
+    # When True (default), users in LLM/local tier can toggle RAG-only mode
+    # per session from the UI.  Set to False to lock the operating tier and
+    # hide the toggle control entirely.
+    allow_rag_toggle: bool = True
+
     # Tuning
     max_history_turns: int = 10
     max_message_length: int = 10000
