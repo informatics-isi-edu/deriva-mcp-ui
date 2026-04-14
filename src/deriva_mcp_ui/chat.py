@@ -960,9 +960,11 @@ def _format_rag_response(
 
         rendered_count += 1
 
-        # If the title chunk itself was retrieved by the search, show it as a
-        # matched section so the user understands why it ranked where it did.
-        if title_chunk_matched and "title" not in matched_sections:
+        # For enriched catalog records, flag "title" as a matched section when
+        # the title chunk was retrieved -- it tells the user why the record ranked.
+        # For web/doc sources, "title" is the display label itself and the match
+        # was in the body, so the annotation would be redundant and misleading.
+        if is_enriched and title_chunk_matched and "title" not in matched_sections:
             matched_sections.insert(0, "title")
 
         # Heading: for grouped output we drop the redundant _src_type from the
