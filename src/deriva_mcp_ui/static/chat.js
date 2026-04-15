@@ -82,6 +82,14 @@
       return;
     }
 
+    // Inject highlight.js theme CSS based on server config
+    if (typeof hljs !== "undefined" && info.code_theme) {
+      var hlLink = document.createElement("link");
+      hlLink.rel = "stylesheet";
+      hlLink.href = "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/" + info.code_theme + ".min.css";
+      document.head.appendChild(hlLink);
+    }
+
     // When login is available (Credenza configured, current session is anonymous)
     // show "Log in" instead of "Log out" so the user knows they can authenticate.
     if (info.login_available) {
@@ -120,9 +128,16 @@
       catalogBar.style.display = "flex";
     }
 
-    if (info.rag_mode_active) {
-      searchBanner.style.display = "block";
+    function setRagModeActive(active) {
+      input.placeholder = active ? "Enter search terms..." : "Ask a question...";
+      if (active) {
+        searchBanner.style.display = "block";
+      } else {
+        searchBanner.style.display = "none";
+      }
     }
+
+    setRagModeActive(info.rag_mode_active);
 
     if (info.rag_toggle_available) {
       ragToggleBtn.style.display = "inline-block";
@@ -141,11 +156,10 @@
           var data = await r.json();
           if (data.rag_mode_active) {
             ragToggleBtn.classList.add("rag-active");
-            searchBanner.style.display = "block";
           } else {
             ragToggleBtn.classList.remove("rag-active");
-            searchBanner.style.display = "none";
           }
+          setRagModeActive(data.rag_mode_active);
         } catch { /* ignore network errors */ }
       });
     }
@@ -183,6 +197,7 @@
           const rendered = renderMarkdown(msg.content);
           if (rendered !== null) {
             textEl.innerHTML = rendered;
+            addCopyButtons(textEl);
           } else {
             textEl.textContent = msg.content;
           }
@@ -559,12 +574,40 @@
     scrollToBottom();
   }
 
+  function addCopyButtons(containerEl) {
+    containerEl.querySelectorAll("pre").forEach(function (pre) {
+      var code = pre.querySelector("code");
+      if (!code) return;
+      if (pre.parentElement && pre.parentElement.classList.contains("pre-wrapper")) return;
+      if (typeof hljs !== "undefined") hljs.highlightElement(code);
+      var wrapper = document.createElement("div");
+      wrapper.className = "pre-wrapper";
+      pre.parentNode.insertBefore(wrapper, pre);
+      wrapper.appendChild(pre);
+      var btn = document.createElement("button");
+      btn.className = "copy-btn";
+      btn.textContent = "Copy";
+      btn.addEventListener("click", function () {
+        navigator.clipboard.writeText(code.innerText).then(function () {
+          btn.textContent = "Copied";
+          btn.classList.add("copied");
+          setTimeout(function () {
+            btn.textContent = "Copy";
+            btn.classList.remove("copied");
+          }, 1500);
+        }).catch(function () { /* clipboard unavailable */ });
+      });
+      wrapper.appendChild(btn);
+    });
+  }
+
   function renderFinal(msgEl, text) {
     const textEl = msgEl.querySelector(".msg-text");
     if (!textEl) return;
     const rendered = renderMarkdown(text);
     if (rendered !== null) {
       textEl.innerHTML = rendered;
+      addCopyButtons(textEl);
     } else {
       textEl.textContent = text;
     }

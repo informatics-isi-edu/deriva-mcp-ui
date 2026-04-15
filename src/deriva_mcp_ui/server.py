@@ -230,6 +230,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "login_available": s.credenza_configured and is_anonymous,
                 "rag_toggle_available": rag_toggle_available,
                 "rag_mode_active": s.operating_tier == "rag_only" or session.rag_only_override,
+                "code_theme": s.code_theme,
             }
         )
 

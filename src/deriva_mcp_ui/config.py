@@ -53,6 +53,10 @@ class Settings(BaseSettings):
     # Branding
     header_title: str = "DERIVA Data Assistant"
     header_logo_url: str = "static/deriva-logo.png"
+    # highlight.js theme name for code block syntax highlighting.
+    # Any theme from https://cdnjs.cloudflare.com/ajax/libs/highlight.js/
+    # e.g. "github", "atom-one-light", "vs", "github-dark"
+    code_theme: str = "vs2015"
 
     # When True, unauthenticated users receive an anonymous session even when
     # Credenza is configured.  Authenticated login is still available via /login.

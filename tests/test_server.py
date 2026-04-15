@@ -149,6 +149,20 @@ def test_session_info_anonymous_mode():
     assert data["login_available"] is False
 
 
+def test_session_info_includes_code_theme():
+    """code_theme is present in session-info and reflects the configured value."""
+    settings = _test_settings(code_theme="github-dark")
+    app = create_app(settings)
+    app.state.store = MemorySessionStore(ttl=settings.session_ttl)
+
+    now = time.time()
+    session = Session(user_id="alice", bearer_token="tok", created_at=now, last_active=now)
+    app.dependency_overrides[require_session] = lambda: session
+
+    data = TestClient(app).get("/session-info").json()
+    assert data["code_theme"] == "github-dark"
+
+
 def test_session_info_login_available_when_allow_anonymous_and_no_bearer():
     """Anonymous session with Credenza configured and allow_anonymous=True: login_available=True."""
     settings = _test_settings(allow_anonymous=True)

@@ -91,11 +91,17 @@ def test_branding_defaults():
     s = Settings()
     assert s.header_title == "DERIVA Data Assistant"
     assert s.header_logo_url == "static/deriva-logo.png"
+    assert s.code_theme == "vs2015"
 
 
 def test_branding_custom_title():
     s = Settings(header_title="FaceBase Portal")
     assert s.header_title == "FaceBase Portal"
+
+
+def test_code_theme_override():
+    s = Settings(code_theme="github-dark")
+    assert s.code_theme == "github-dark"
 
 
 def test_logo_url_https_valid():

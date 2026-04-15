@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{{HEADER_TITLE}}</title>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -137,12 +138,33 @@
       border-top-left-radius: 3px;
     }
     .msg-assistant pre {
-      background: #f0f0f0;
+      background: #d4d8dc;
       border-radius: 5px;
       padding: 0.6rem 0.8rem;
       overflow-x: auto;
       font-size: 0.85em;
       margin: 0.5rem 0;
+    }
+    .msg-assistant .pre-wrapper {
+      position: relative;
+    }
+    .msg-assistant .pre-wrapper .copy-btn {
+      position: absolute;
+      top: 0.3rem;
+      right: 0.3rem;
+      padding: 0.15rem 0.45rem;
+      font-size: 0.75em;
+      background: #d0d7de;
+      border: none;
+      border-radius: 3px;
+      cursor: pointer;
+      opacity: 0;
+      transition: opacity 0.15s;
+    }
+    .msg-assistant .pre-wrapper:hover .copy-btn { opacity: 1; }
+    .msg-assistant .pre-wrapper .copy-btn.copied {
+      background: #4caf50;
+      color: #fff;
     }
     .msg-assistant code { font-family: ui-monospace, monospace; font-size: 0.88em; }
     .msg-assistant p { margin: 0.4rem 0; }
