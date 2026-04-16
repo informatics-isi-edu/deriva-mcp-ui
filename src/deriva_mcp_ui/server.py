@@ -231,6 +231,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "rag_toggle_available": rag_toggle_available,
                 "rag_mode_active": s.operating_tier == "rag_only" or session.rag_only_override,
                 "code_theme": s.code_theme,
+                "show_response_cards": s.show_response_cards,
+                "chat_align_left": s.chat_align_left,
             }
         )
 
@@ -373,6 +375,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         page = page.replace("{{HEADER_TITLE}}", html.escape(s.header_title))
         logo_url = html.escape(s.header_logo_url) if s.header_logo_url else ""
         page = page.replace("{{HEADER_LOGO_URL}}", logo_url)
+        page = page.replace("{{HEADER_BG_COLOR}}", html.escape(s.header_bg_color))
+        page = page.replace("{{INPUT_AREA_BG_COLOR}}", html.escape(s.input_area_bg_color))
+        page = page.replace("{{CHAT_BG_COLOR}}", html.escape(s.chat_bg_color))
         # Inject <base href="..."> so relative asset paths resolve correctly
         # whether the browser URL has a trailing slash or not.
         if s.public_url:

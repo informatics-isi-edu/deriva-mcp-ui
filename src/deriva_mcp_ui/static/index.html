@@ -4,15 +4,18 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{{HEADER_TITLE}}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600&display=swap" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     body {
-      font-family: system-ui, -apple-system, sans-serif;
+      font-family: 'Montserrat', system-ui, -apple-system, sans-serif;
       font-size: 15px;
-      background: #f5f5f5;
+      background: {{CHAT_BG_COLOR}};
       color: #1a1a1a;
       height: 100dvh;
       display: flex;
@@ -21,7 +24,7 @@
 
     /* ---- Header ---- */
     #header {
-      background: #1e3a5f;
+      background: {{HEADER_BG_COLOR}};
       color: #fff;
       padding: 0.75rem 1.25rem;
       display: flex;
@@ -109,9 +112,14 @@
     }
 
     /* ---- Message thread ---- */
-    #thread {
+    #thread-scroller {
       flex: 1;
       overflow-y: auto;
+    }
+    #thread {
+      max-width: 65rem;
+      width: 100%;
+      margin: 0 auto;
       padding: 1.25rem;
       display: flex;
       flex-direction: column;
@@ -122,7 +130,7 @@
       max-width: 90%;
       padding: 0.65rem 0.9rem;
       border-radius: 8px;
-      line-height: 1.55;
+      line-height: 1.6;
       word-break: break-word;
       align-self: flex-start;
     }
@@ -130,7 +138,18 @@
       background: #b8d0ed;
       color: #1a1a1a;
       border: 1px solid #8fb3d9;
+      align-self: flex-end;
+      max-width: 70%;
+      margin-right: 10%;
+      border-top-left-radius: 8px;
+      border-top-right-radius: 3px;
+    }
+    body.chat-align-left .msg-user {
+      align-self: flex-start;
+      margin-right: 0;
+      margin-left: 10%;
       border-top-left-radius: 3px;
+      border-top-right-radius: 8px;
     }
     .msg-assistant {
       background: #e8ecf0;
@@ -167,23 +186,66 @@
       color: #fff;
     }
     .msg-assistant code { font-family: ui-monospace, monospace; font-size: 0.88em; }
+    /* During streaming suppress default blue link style until renderFinal transforms them */
+    .msg-assistant a { color: inherit; text-decoration: none; border-bottom: 1px dotted #999; }
+    /* Inline reference bubble -- wrapping <a> makes the whole bubble clickable */
+    .ref-num {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: #6b8aaa;
+      color: #fff;
+      font-size: 0.6em;
+      font-weight: 600;
+      border-radius: 3px;
+      padding: 0.1em 0.35em;
+      margin-left: 0.1em;
+      vertical-align: super;
+      line-height: 1;
+      text-decoration: none;
+      cursor: pointer;
+    }
+    a.ref-bubble { text-decoration: none; }
+    a.ref-bubble:hover .ref-num { background: #4a6a8a; }
+    /* Collapsible reference list -- collapsed by default */
+    .ref-section {
+      font-size: 0.8em;
+      color: #666;
+      margin-top: 0.3rem;
+      margin-bottom: 0.25rem;
+    }
+    .ref-section summary {
+      cursor: pointer;
+      user-select: none;
+      color: #888;
+      list-style: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.3em;
+    }
+    .ref-section summary::-webkit-details-marker { display: none; }
+    .ref-section summary::before {
+      content: "\25B6";
+      font-size: 0.6em;
+      color: #aaa;
+      transition: transform 0.12s;
+    }
+    .ref-section[open] > summary::before { transform: rotate(90deg); }
+    .ref-section summary:hover { color: #555; }
+    .ref-section .ref-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.15rem;
+      padding-top: 0.3rem;
+    }
+    .ref-section .ref-list a { color: #1e3a5f; word-break: break-all; }
+    .ref-section .ref-list a:hover { text-decoration: underline; }
     .msg-assistant p { margin: 0.4rem 0; }
     .msg-assistant p:first-child { margin-top: 0; }
     .msg-assistant p:last-child { margin-bottom: 0; }
     .msg-assistant ul, .msg-assistant ol { padding-left: 1.4rem; margin: 0.4rem 0; }
     .msg-assistant table { border-collapse: collapse; font-size: 0.88em; margin: 0.5rem 0; }
-    /* Separator between prose and the first structural element that follows it */
-    .msg-assistant p + ul,
-    .msg-assistant p + ol,
-    .msg-assistant p + table,
-    .msg-assistant p + h1,
-    .msg-assistant p + h2,
-    .msg-assistant p + h3,
-    .msg-assistant p + h4 {
-      border-top: 1px solid #c8cfd8;
-      margin-top: 0.6rem;
-      padding-top: 0.5rem;
-    }
+
     .msg-assistant th, .msg-assistant td { border: 1px solid #ccc; padding: 0.3rem 0.6rem; }
     .msg-assistant th { background: #f0f0f0; }
     /* RAG source headings -- h4 used for per-source section labels */
@@ -328,45 +390,37 @@
 
     /* ---- Input area ---- */
     #input-area {
-      background: #1e3a5f;
-      border-top: none;
+      background: {{INPUT_AREA_BG_COLOR}};
       padding: 0.75rem 1.25rem;
-      display: flex;
-      gap: 0.6rem;
-      align-items: center;
       flex-shrink: 0;
     }
+    #input-inner {
+      max-width: 60rem;
+      width: 100%;
+      margin: 0 auto;
+    }
     #message-input {
-      flex: 1;
+      width: 100%;
       resize: none;
       font-size: 0.95rem;
       font-family: inherit;
-      border: 1.5px solid #1e3a5f;
-      border-radius: 8px;
+      border: 1.5px solid {{INPUT_AREA_BG_COLOR}};
+      border-radius: 1rem;
       padding: 0.55rem 0.8rem;
       line-height: 1.5;
-      max-height: 150px;
-      overflow-y: auto;
+      overflow: hidden;
       outline: none;
       transition: border-color 0.15s;
     }
-    #message-input:focus { border-color: #1e3a5f; box-shadow: 0 0 0 1px rgba(30, 58, 95, 0.2); }
-    #send-btn {
-      background: #f5f5f5;
-      color: #1e3a5f;
-      border: 1.5px solid #1e3a5f;
-      border-radius: 8px;
-      padding: 0.55rem 1.1rem;
-      font-size: 0.95rem;
-      font-weight: 600;
-      cursor: pointer;
-      white-space: nowrap;
-      transition: background 0.15s;
+    #message-input:focus { border-color: {{INPUT_AREA_BG_COLOR}}; box-shadow: 0 0 0 1px rgba(30, 58, 95, 0.2); }
+
+    /* ---- No-cards mode: flat assistant messages (enabled when show_response_cards=false) ---- */
+    body.no-response-cards .msg-assistant {
+      background: transparent;
+      border: none;
+      border-radius: 0;
+      padding: 0.3rem 0;
     }
-    #send-btn:hover:not(:disabled) { background: #e8ecf0; }
-    #send-btn:disabled { background: #f5f5f5; color: #8fa8c8; border-color: #8fa8c8; cursor: not-allowed; }
-    #send-btn.stop-mode { background: #c0392b; color: #fff; border-color: #c0392b; }
-    #send-btn.stop-mode:hover { background: #a93226; }
   </style>
 </head>
 <body>
@@ -391,11 +445,12 @@
   <label>Catalog ID <input id="gp-catalog-id" type="text" placeholder="e.g. 1"></label>
 </div>
 
-<div id="thread"></div>
+<div id="thread-scroller"><div id="thread"></div></div>
 
 <div id="input-area">
-  <textarea id="message-input" rows="1" placeholder="Ask a question..." aria-label="Message"></textarea>
-  <button id="send-btn">Send</button>
+  <div id="input-inner">
+    <textarea id="message-input" rows="1" placeholder="Ask a question..." aria-label="Message"></textarea>
+  </div>
 </div>
 
 <script src="static/chat.js"></script>

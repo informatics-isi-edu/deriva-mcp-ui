@@ -57,16 +57,28 @@ class Settings(BaseSettings):
     # Any theme from https://cdnjs.cloudflare.com/ajax/libs/highlight.js/
     # e.g. "github", "atom-one-light", "vs", "github-dark"
     code_theme: str = "vs2015"
+    # Background color for the header bar (CSS color value).
+    header_bg_color: str = "#1e3a5f"
+    # Background color for the input area bar (CSS color value).
+    # Also used for the message input border and send button accent color.
+    input_area_bg_color: str = "#1e3a5f"
+    # Background color for the chat thread area (CSS color value).
+    chat_bg_color: str = "#f5f5f5"
+    # When True, assistant responses are rendered in styled card bubbles.
+    # When False (default), responses render as plain unstyled content.
+    show_response_cards: bool = False
+    # When True, user messages are left-aligned (matching assistant messages).
+    # When False (default), user messages are right-aligned.
+    chat_align_left: bool = False
 
     # When True, unauthenticated users receive an anonymous session even when
     # Credenza is configured.  Authenticated login is still available via /login.
     # When False (default), Credenza presence forces login.
     allow_anonymous: bool = False
 
-    # When True (default), users in LLM/local tier can toggle RAG-only mode
-    # per session from the UI.  Set to False to lock the operating tier and
-    # hide the toggle control entirely.
-    allow_rag_toggle: bool = True
+    # When True, users in LLM/local tier can toggle RAG-only mode per session from the UI.
+    # False (default) will lock the operating tier and hide the toggle control entirely.
+    allow_rag_toggle: bool = False
 
     # Tuning
     max_history_turns: int = 10

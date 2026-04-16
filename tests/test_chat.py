@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import re
 import time
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -568,7 +569,9 @@ def test_system_prompt_no_schema_context_no_separator():
     sess = _session()
     p = system_prompt(s, sess, schema_context="")
     assert "Available schema information:" not in p
-    assert "---" not in p
+    # No standalone --- divider lines; the prompt may contain --- within rule
+    # text as examples of what NOT to output, but not as actual section breaks.
+    assert not re.search(r"(?m)^---$", p)
 
 
 async def test_run_chat_turn_primes_schema_on_first_turn():

@@ -233,8 +233,8 @@ def test_session_info_operating_mode_rag_only():
 
 
 def test_rag_toggle_available_in_llm_mode():
-    """rag_toggle_available=True in LLM tier with allow_rag_toggle=True (default)."""
-    settings = _test_settings()
+    """rag_toggle_available=True in LLM tier when allow_rag_toggle=True."""
+    settings = _test_settings(allow_rag_toggle=True)
     app = create_app(settings)
     app.state.store = MemorySessionStore(ttl=settings.session_ttl)
     now = time.time()
@@ -246,7 +246,7 @@ def test_rag_toggle_available_in_llm_mode():
 
 
 def test_rag_toggle_not_available_when_disabled_by_config():
-    """rag_toggle_available=False when allow_rag_toggle=False."""
+    """rag_toggle_available=False when allow_rag_toggle=False (default)."""
     settings = _test_settings(allow_rag_toggle=False)
     app = create_app(settings)
     app.state.store = MemorySessionStore(ttl=settings.session_ttl)
@@ -273,7 +273,7 @@ def test_rag_toggle_not_available_in_rag_only_tier():
 @pytest.mark.asyncio
 async def test_set_rag_mode_enables_override():
     """POST /rag-mode {enabled: true} sets rag_only_override on the session."""
-    settings = _test_settings()
+    settings = _test_settings(allow_rag_toggle=True)
     app = create_app(settings)
     store = MemorySessionStore(ttl=settings.session_ttl)
     app.state.store = store
@@ -295,7 +295,7 @@ async def test_set_rag_mode_enables_override():
 @pytest.mark.asyncio
 async def test_set_rag_mode_disables_override():
     """POST /rag-mode {enabled: false} clears rag_only_override."""
-    settings = _test_settings()
+    settings = _test_settings(allow_rag_toggle=True)
     app = create_app(settings)
     store = MemorySessionStore(ttl=settings.session_ttl)
     app.state.store = store

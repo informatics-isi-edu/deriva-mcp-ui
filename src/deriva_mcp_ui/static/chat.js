@@ -23,9 +23,9 @@
     return html.replace(/<a href=/g, '<a target="_blank" rel="noopener noreferrer" href=');
   }
 
-  const thread       = document.getElementById("thread");
+  const threadScroller = document.getElementById("thread-scroller");
+  const thread         = document.getElementById("thread");
   const input        = document.getElementById("message-input");
-  const sendBtn      = document.getElementById("send-btn");
   const inputArea    = document.getElementById("input-area");
   const catalogBar   = document.getElementById("catalog-bar");
   const gpHostname   = document.getElementById("gp-hostname");
@@ -82,6 +82,16 @@
       return;
     }
 
+    // Apply no-cards mode when show_response_cards is false
+    if (!info.show_response_cards) {
+      document.body.classList.add("no-response-cards");
+    }
+
+    // Apply left-align mode when chat_align_left is true
+    if (info.chat_align_left) {
+      document.body.classList.add("chat-align-left");
+    }
+
     // Inject highlight.js theme CSS based on server config
     if (typeof hljs !== "undefined" && info.code_theme) {
       var hlLink = document.createElement("link");
@@ -97,14 +107,17 @@
       logoutLink.href = "login";
     }
 
-    // User identity -- show display_name with hover tooltip for full details
+    // User identity -- show display_name with hover tooltip for full details.
+    // Hide the label entirely when the user is anonymous (not logged in).
     var shortName = info.display_name || info.user_id || "";
-    userLabel.textContent = shortName;
-    var tooltipLines = [shortName];
-    if (info.full_name && info.full_name !== shortName) tooltipLines.push(info.full_name);
-    if (info.email) tooltipLines.push(info.email);
-    if (info.user_id && info.user_id !== shortName) tooltipLines.push(info.user_id);
-    userLabel.title = tooltipLines.join("\n");
+    if (shortName && shortName !== "Anonymous") {
+      userLabel.textContent = shortName;
+      var tooltipLines = [shortName];
+      if (info.full_name && info.full_name !== shortName) tooltipLines.push(info.full_name);
+      if (info.email) tooltipLines.push(info.email);
+      if (info.user_id && info.user_id !== shortName) tooltipLines.push(info.user_id);
+      userLabel.title = tooltipLines.join("\n");
+    }
 
     if (info.catalog_mode === "default" && info.label) {
       var label = info.label;
@@ -198,6 +211,7 @@
           if (rendered !== null) {
             textEl.innerHTML = rendered;
             addCopyButtons(textEl);
+            transformLinks(textEl);
           } else {
             textEl.textContent = msg.content;
           }
@@ -253,9 +267,6 @@
 
     busy = true;
     abortController = new AbortController();
-    sendBtn.textContent = "Stop";
-    sendBtn.classList.add("stop-mode");
-    sendBtn.disabled = false;
     input.value = "";
     autoResize();
 
@@ -396,9 +407,6 @@
 
       busy = false;
       abortController = null;
-      sendBtn.textContent = "Send";
-      sendBtn.classList.remove("stop-mode");
-      sendBtn.disabled = false;
       input.focus();
     }
 
@@ -574,6 +582,77 @@
     scrollToBottom();
   }
 
+  // Replace inline links with numbered reference bubbles and insert a compact
+  // reference list immediately after each top-level block that contained links.
+  // Numbering resets per block so a list of 20 dataset links gets [1]-[20]
+  // with its own reference section right below, not at the bottom of the page.
+  function transformLinks(containerEl) {
+    var blockList = Array.from(containerEl.children);
+    blockList.forEach(function (block) {
+      var anchors = Array.from(block.querySelectorAll("a[href]"));
+      if (anchors.length === 0) return;
+
+      var refs = [];
+      var urlIndex = {};
+      var localNum = 1;
+
+      anchors.forEach(function (a) {
+        var href = a.getAttribute("href");
+        if (!href || href.startsWith("#")) return;
+
+        var num = urlIndex[href];
+        if (num === undefined) {
+          num = localNum++;
+          refs.push({ num: num, href: href });
+          urlIndex[href] = num;
+        }
+
+        // Replace <a>text</a> with: text + clickable bubble
+        var frag = document.createDocumentFragment();
+        frag.appendChild(document.createTextNode(a.textContent));
+        var bubbleLink = document.createElement("a");
+        bubbleLink.className = "ref-bubble";
+        bubbleLink.href = href;
+        bubbleLink.target = "_blank";
+        bubbleLink.rel = "noopener noreferrer";
+        var sup = document.createElement("sup");
+        sup.className = "ref-num";
+        sup.textContent = num;
+        bubbleLink.appendChild(sup);
+        frag.appendChild(bubbleLink);
+        a.parentNode.replaceChild(frag, a);
+      });
+
+      if (refs.length === 0) return;
+
+      // Collapsible reference list collapsed by default
+      var refSection = document.createElement("details");
+      refSection.className = "ref-section";
+      var summary = document.createElement("summary");
+      summary.textContent = "References";
+      refSection.appendChild(summary);
+      var refList = document.createElement("div");
+      refList.className = "ref-list";
+      refs.forEach(function (ref) {
+        var item = document.createElement("div");
+        var sup = document.createElement("sup");
+        sup.className = "ref-num";
+        sup.textContent = ref.num;
+        item.appendChild(sup);
+        item.appendChild(document.createTextNode("\u00a0"));
+        var a = document.createElement("a");
+        a.href = ref.href;
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+        a.textContent = ref.href;
+        item.appendChild(a);
+        refList.appendChild(item);
+      });
+      refSection.appendChild(refList);
+      block.insertAdjacentElement("afterend", refSection);
+    });
+  }
+
   function addCopyButtons(containerEl) {
     containerEl.querySelectorAll("pre").forEach(function (pre) {
       var code = pre.querySelector("code");
@@ -608,6 +687,7 @@
     if (rendered !== null) {
       textEl.innerHTML = rendered;
       addCopyButtons(textEl);
+      transformLinks(textEl);
     } else {
       textEl.textContent = text;
     }
@@ -615,7 +695,7 @@
   }
 
   function scrollToBottom() {
-    thread.scrollTop = thread.scrollHeight;
+    threadScroller.scrollTop = threadScroller.scrollHeight;
   }
 
   // ------------------------------------------------------------------
@@ -624,7 +704,7 @@
 
   function autoResize() {
     input.style.height = "auto";
-    input.style.height = Math.min(input.scrollHeight, 150) + "px";
+    input.style.height = input.scrollHeight + "px";
   }
 
   // ------------------------------------------------------------------
@@ -647,11 +727,9 @@
   // Event listeners
   // ------------------------------------------------------------------
 
-  sendBtn.addEventListener("click", function () {
-    if (busy) {
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && busy) {
       stopGeneration();
-    } else {
-      sendMessage();
     }
   });
 
