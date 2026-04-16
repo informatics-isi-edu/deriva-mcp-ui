@@ -1,7 +1,8 @@
 # deriva-mcp-ui Workplan and Design
 
-**Status:** Phases 0-10 code-complete. Phase 9 design only (not implemented). Phase 10 RAG-only mode
-live-tested and display-polished (2026-04-09). 205 tests, 84% coverage.
+**Status:** Phases 0-10 code-complete + Display Polish (2026-04-16). Phase 9 design only (not
+implemented). Phase 10 RAG-only mode live-tested and display-polished (2026-04-09). 227 tests,
+85% coverage.
 
 **Target repo:** `deriva-mcp-ui`
 
@@ -33,19 +34,19 @@ Browser (HTML + JS)
   |
   | HTTPS (session cookie)
   v
-deriva-mcp-ui  (FastAPI/Starlette)
+deriva-mcp-ui  (FastAPI, port 8001)
   |                    |
   | MCP HTTP           | HTTPS
-  | (bearer token)     | (Claude API)
+  | (bearer token)     | (LLM API -- Anthropic / OpenAI / Ollama / ...)
   v                    v
-deriva-mcp-core     Anthropic API
+deriva-mcp-core     LiteLLM provider abstraction
   |
   | HTTPS
   v
 DERIVA (ERMrest, Hatrac)
   |
   v
-Credenza (OAuth AS -- introspect + exchange, as today)
+Credenza (OAuth AS -- introspect + exchange)
 ```
 
 ### What the UI service does
@@ -241,20 +242,36 @@ The system prompt is not counted as history and is always prepended fresh.
 
 ## Configuration
 
-`pydantic-settings` `BaseSettings` with `DERIVA_CHATBOT_` prefix.
+`pydantic-settings` `BaseSettings` with `DERIVA_CHATBOT_` prefix. Full reference in `README.md`.
 
-**Required:**
+**Always required:**
 
-| Variable                        | Description                                                           |
-|---------------------------------|-----------------------------------------------------------------------|
-| `DERIVA_CHATBOT_MCP_URL`        | Base URL of the deriva-mcp-core server                                |
-| `DERIVA_CHATBOT_CREDENZA_URL`   | Base URL of the Credenza instance                                     |
-| `DERIVA_CHATBOT_CLIENT_ID`      | OAuth client ID registered in Credenza for this service               |
-| `DERIVA_CHATBOT_CLIENT_SECRET`  | OAuth client secret                                                   |
-| `DERIVA_CHATBOT_MCP_RESOURCE`   | Resource identifier for the MCP server (must match MCP server config) |
-| `DERIVA_CHATBOT_PUBLIC_URL`     | Public HTTPS URL of this service (used as OAuth redirect base)        |
-| `ANTHROPIC_API_KEY`             | Anthropic API key for Claude                                          |
-| `DERIVA_CHATBOT_SESSION_SECRET` | Secret key for signing session cookies (random bytes, keep private)   |
+| Variable                 | Description                            |
+|--------------------------|----------------------------------------|
+| `DERIVA_CHATBOT_MCP_URL` | Base URL of the deriva-mcp-core server |
+
+**Required when Credenza is configured (i.e., `DERIVA_CHATBOT_CREDENZA_URL` is set):**
+
+| Variable                      | Description                                                            |
+|-------------------------------|------------------------------------------------------------------------|
+| `DERIVA_CHATBOT_CREDENZA_URL` | Base URL of the Credenza instance                                      |
+| `DERIVA_CHATBOT_CLIENT_ID`    | OAuth client ID registered in Credenza (public PKCE client, no secret) |
+| `DERIVA_CHATBOT_MCP_RESOURCE` | Resource identifier for the MCP server (must match MCP server config)  |
+| `DERIVA_CHATBOT_PUBLIC_URL`   | Public HTTPS URL of this service (used as OAuth redirect base)         |
+
+No client secret or signing key is required. The bearer token issued by Credenza IS the
+session identifier -- stored in an `HttpOnly Secure SameSite=Lax` cookie. Any forged
+cookie value is rejected at lookup time (no `tok:` entry in the store).
+
+**LLM provider (omit all three for RAG-only mode):**
+
+| Variable                      | Default            | Description                                              |
+|-------------------------------|--------------------|----------------------------------------------------------|
+| `DERIVA_CHATBOT_LLM_API_KEY`  |                    | API key (Anthropic, OpenAI, etc.); not needed for Ollama |
+| `DERIVA_CHATBOT_LLM_MODEL`    | `claude-haiku-4-5` | Model identifier; prefix with `ollama/` for local models |
+| `DERIVA_CHATBOT_LLM_PROVIDER` |                    | Provider; auto-detected from model string if omitted     |
+| `DERIVA_CHATBOT_LLM_API_BASE` |                    | Custom API base URL (Ollama, Azure, self-hosted)         |
+| `DERIVA_CHATBOT_MODE`         | `auto`             | `auto`, `llm`, or `rag_only`; forces operating tier      |
 
 **Default-catalog mode (both required to activate):**
 
@@ -264,16 +281,41 @@ The system prompt is not counted as history and is always prepended fresh.
 | `DERIVA_CHATBOT_DEFAULT_CATALOG_ID`    | Catalog ID or alias                            |
 | `DERIVA_CHATBOT_DEFAULT_CATALOG_LABEL` | Display name shown in the UI (optional)        |
 
+**Auth and access control:**
+
+| Variable                          | Default | Description                                                                                |
+|-----------------------------------|---------|--------------------------------------------------------------------------------------------|
+| `DERIVA_CHATBOT_ALLOW_ANONYMOUS`  | `false` | When true, unauthenticated users get an anonymous session even when Credenza is configured |
+| `DERIVA_CHATBOT_ALLOW_RAG_TOGGLE` | `false` | When true, users in LLM/local tier can switch to RAG-only mode per session from the UI     |
+
+**Branding and UI:**
+
+| Variable                             | Default                  | Description                                                        |
+|--------------------------------------|--------------------------|--------------------------------------------------------------------|
+| `DERIVA_CHATBOT_HEADER_TITLE`        | `DERIVA Data Assistant`  | Text shown in the header bar                                       |
+| `DERIVA_CHATBOT_HEADER_LOGO_URL`     | `static/deriva-logo.png` | Logo URL; must be `static/<filename>` or `https://`                |
+| `DERIVA_CHATBOT_HEADER_BG_COLOR`     | `#1e3a5f`                | CSS color for the header bar background                            |
+| `DERIVA_CHATBOT_INPUT_AREA_BG_COLOR` | `#1e3a5f`                | CSS color for the input area background and textarea border accent |
+| `DERIVA_CHATBOT_CHAT_BG_COLOR`       | `#f5f5f5`                | CSS color for the chat thread area background                      |
+| `DERIVA_CHATBOT_CODE_THEME`          | `vs2015`                 | highlight.js theme name for code block syntax highlighting         |
+| `DERIVA_CHATBOT_SHOW_RESPONSE_CARDS` | `false`                  | When true, assistant responses are rendered in styled card bubbles |
+| `DERIVA_CHATBOT_CHAT_ALIGN_LEFT`     | `false`                  | When true, user messages are left-aligned (default: right-aligned) |
+
+Branding values are injected into `static/index.html` at request time using `{{PLACEHOLDER}}`
+substitution in `server.py`'s `GET /` route. Color values are `html.escape()`-sanitized before
+insertion.
+
 **Tuning:**
 
-| Variable                             | Default            | Description                                                                                                                                                              |
-|--------------------------------------|--------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `DERIVA_CHATBOT_CLAUDE_MODEL`        | `claude-haiku-4-5` | Claude model ID (Haiku is sufficient after prompt engineering work; override to Sonnet if needed)                                                                        |
-| `DERIVA_CHATBOT_MAX_HISTORY_TURNS`   | `10`               | Max conversation turns retained in server-side history                                                                                                                   |
-| `DERIVA_CHATBOT_SESSION_TTL`         | `28800`            | Server-side session TTL in seconds (default 8h)                                                                                                                          |
-| `DERIVA_CHATBOT_STORAGE_BACKEND`     | `memory`           | Session store backend: `memory`, `redis`, `valkey`, `postgresql`, `sqlite`                                                                                               |
-| `DERIVA_CHATBOT_STORAGE_BACKEND_URL` | --                 | Connection URL for the selected backend (not used for `memory`). Examples: `redis://localhost:6379/0`, `postgresql://user:pass@host/db`, `sqlite:///path/to/sessions.db` |
-| `DERIVA_CHATBOT_DEBUG`               | `false`            | Enable debug logging and show tool calls in the UI                                                                                                                       |
+| Variable                             | Default  | Description                                                                |
+|--------------------------------------|----------|----------------------------------------------------------------------------|
+| `DERIVA_CHATBOT_MAX_HISTORY_TURNS`   | `10`     | Conversation turns retained per session                                    |
+| `DERIVA_CHATBOT_MAX_MESSAGE_LENGTH`  | `10000`  | Maximum user message length in characters                                  |
+| `DERIVA_CHATBOT_SESSION_TTL`         | `28800`  | Server-side session TTL in seconds (default 8h)                            |
+| `DERIVA_CHATBOT_HISTORY_TTL`         | `604800` | History-only TTL; history survives session expiry (7 days)                 |
+| `DERIVA_CHATBOT_STORAGE_BACKEND`     | `memory` | Session store backend: `memory`, `redis`, `valkey`, `postgresql`, `sqlite` |
+| `DERIVA_CHATBOT_STORAGE_BACKEND_URL` |          | Connection URL for the selected backend                                    |
+| `DERIVA_CHATBOT_DEBUG`               | `false`  | Enable debug logging                                                       |
 
 ---
 
@@ -281,29 +323,31 @@ The system prompt is not counted as history and is always prepended fresh.
 
 ```
 deriva-mcp-ui/
-├── pyproject.toml
-├── Dockerfile
-├── docs/
-│   └── workplan-deriva-mcp-ui.md
-└── src/
-    └── deriva_mcp_ui/
-        ├── __init__.py
-        ├── server.py        # FastAPI app, route registration, lifespan
-        ├── config.py        # Settings (DERIVA_CHATBOT_* vars)
-        ├── auth.py          # Credenza OAuth client: /login, /callback, /logout routes
-        ├── storage/         # Session store backends (mirrors Credenza storage pattern)
-        │   ├── __init__.py  # STORAGE_BACKENDS registry + factory
-        │   ├── base.py      # SessionStore protocol + Session dataclass
-        │   ├── memory.py
-        │   ├── redis.py
-        │   ├── valkey.py
-        │   ├── postgresql.py
-        │   └── sqlite.py
-        ├── mcp_client.py    # MCP client wrapper: connect, list_tools, call_tool
-        ├── chat.py          # Claude tool-calling loop + SSE response streaming
-        └── static/
-            ├── index.html   # Chat UI shell
-            └── chat.js      # SSE client, message rendering, login state
++-- pyproject.toml
++-- Dockerfile
++-- docs/
+|   +-- workplan-deriva-mcp-ui.md
++-- src/
+    +-- deriva_mcp_ui/
+        +-- __init__.py
+        +-- server.py        # FastAPI app, route registration, lifespan
+        +-- config.py        # Settings (DERIVA_CHATBOT_* env vars, pydantic-settings)
+        +-- auth.py          # Credenza OAuth client: /login, /callback, /logout routes
+        +-- chat.py          # LiteLLM tool-calling loop, RAG-only path, SSE streaming
+        +-- mcp_client.py    # MCP client: connect, list_tools, call_tool, open_session
+        +-- audit.py         # Structured audit event logging
+        +-- storage/         # Session store backends
+        |   +-- __init__.py  # STORAGE_BACKENDS registry + factory
+        |   +-- base.py      # SessionStore protocol + Session dataclass
+        |   +-- memory.py
+        |   +-- redis.py
+        |   +-- valkey.py
+        |   +-- postgresql.py
+        |   +-- sqlite.py
+        +-- static/
+            +-- index.html   # Chat UI shell (branding injected at request time)
+            +-- chat.js      # SSE client, message rendering, link transform, login state
+            +-- deriva-logo.png
 ```
 
 ---
@@ -692,10 +736,6 @@ the user is active, surviving multiple re-authentication cycles.
 
 #### UI polish
 
-- **Left-aligned chat layout**: both user and assistant messages are left-aligned and
-  interleaved, replacing the right-aligned user bubble. User messages use a steel-blue
-  tint (`#b8d0ed`) to distinguish them from the gray assistant bubbles (`#e8ecf0`).
-
 - **Collapsible tool container**: all tool call blocks for a turn are wrapped in a parent
   `<details>` that starts collapsed, showing only "N tool calls" in the summary. Individual
   tool calls remain independently expandable inside. Container is hidden when no tools ran.
@@ -708,9 +748,140 @@ the user is active, surviving multiple re-authentication cycles.
 - **Incremental Markdown rendering**: text chunks are rendered through `marked.parse()`
   incrementally during streaming, not as raw text. Final render on stream end.
 
-- **Prose/structure visual separation**: CSS adjacent sibling selector adds a rule line
-  between paragraph text and the first structural markdown element (list, table, heading)
-  that follows it within an assistant message.
+---
+
+### Display Polish (2026-04-16)
+
+**Status:** Complete. 227 tests, 85% coverage.
+
+A round of UI and configuration improvements made after the Phase 10 RAG-only live test.
+
+---
+
+#### Font and line height
+
+- Body font changed to **Montserrat** (loaded from Google Fonts CDN). Assistant message
+  line-height set to **1.6** for improved readability of multi-line responses.
+
+---
+
+#### Branding config variables
+
+Five new `DERIVA_CHATBOT_` environment variables allow per-deployment customization without
+rebuilding the image (see Configuration section above):
+
+- `HEADER_BG_COLOR` -- header bar background (default `#1e3a5f`)
+- `INPUT_AREA_BG_COLOR` -- input area background and textarea border accent (default `#1e3a5f`)
+- `CHAT_BG_COLOR` -- chat thread area background (default `#f5f5f5`)
+- `SHOW_RESPONSE_CARDS` -- styled card bubbles on assistant messages (default `false`)
+- `CHAT_ALIGN_LEFT` -- left-align user messages (default `false`; see below)
+
+Injection: `server.py`'s `GET /` route replaces `{{HEADER_BG_COLOR}}` etc. in
+`index.html` at request time using `html.escape()`-sanitized values. No build step.
+
+`SHOW_RESPONSE_CARDS=false` is the default. When false, assistant messages render as
+plain unstyled content. When true, they receive the original card-bubble styling
+(`background`, `border`, `border-radius`, `padding`). Controlled by the CSS class
+`no-response-cards` on `<body>`, toggled from the `/session-info` response.
+
+---
+
+#### Centered content column
+
+The chat thread and input area are now constrained to a **65 rem** centered column,
+matching the layout of ChatGPT and Claude.ai.
+
+Implementation uses a two-div pattern:
+
+```
+#thread-scroller  (flex: 1; overflow-y: auto)
+  #thread         (max-width: 65rem; margin: 0 auto; display: flex; flex-direction: column)
+
+#input-area       (background: {{INPUT_AREA_BG_COLOR}}; flex-shrink: 0)
+  #input-inner    (max-width: 60rem; margin: 0 auto)
+```
+
+The outer `#thread-scroller` owns the scrollbar (positioned at the viewport edge, not
+inside the content column). The inner `#thread` caps content width and centers it.
+`scrollToBottom()` targets `threadScroller`, not `thread`.
+
+---
+
+#### User message alignment
+
+User messages are **right-aligned** by default (matching ChatGPT / Claude.ai):
+
+```css
+.msg-user {
+    align-self: flex-end;
+    max-width: 70%;
+    margin-right: 10%;
+}
+```
+
+The `10%` right margin aligns the visible right edge of the user bubble with the
+right boundary of assistant text (which is capped at 90% of the 65 rem column).
+
+When `CHAT_ALIGN_LEFT=true`, the body class `chat-align-left` is applied and user
+messages mirror to the left side:
+
+```css
+body.chat-align-left .msg-user {
+    align-self: flex-start;
+    margin-right: 0;
+    margin-left: 10%;
+}
+```
+
+The anonymous user label is hidden in the UI header when the user is not logged in
+(i.e., when `display_name === "Anonymous"` in the `/session-info` response).
+
+---
+
+#### Input area
+
+- The Send button is removed. **Enter** submits; **Shift+Enter** inserts a newline.
+- **ESC** stops an in-progress generation (sets the `cancelled` event, causing
+  `run_chat_turn` to terminate). Wired in `chat.js` via
+  `document.addEventListener("keydown", ...)` checking `e.key === "Escape" && busy`.
+- The textarea auto-resizes to fit its content: `overflow: hidden` + `input.style.height = input.scrollHeight + "px"`.
+  No maximum height cap -- the input grows as needed.
+- Textarea has rounded corners (`border-radius: 1rem`) and a border color matching
+  `INPUT_AREA_BG_COLOR`.
+
+---
+
+#### Reference bubble rendering
+
+Inline hyperlinks in assistant responses are replaced by clickable numbered reference
+bubbles to avoid 1990s-style blue underlined links.
+
+`transformLinks(containerEl)` in `chat.js` post-processes each rendered message:
+
+1. Walks the top-level block children of the container (paragraphs, list items, headings,
+   table cells, etc.).
+2. For each block that contains one or more `<a>` elements, replaces each `<a>` with:
+    - The original link text (as a text node)
+    - A clickable `<a class="ref-bubble" href="..."><sup class="ref-num">N</sup></a>` bubble
+3. After the block, inserts a `<details class="ref-section">` collapsed by default, containing
+   a numbered list of the URLs from that block.
+4. Numbering resets per block -- each block's references are self-contained.
+
+`transformLinks` is called in `renderFinal` (after the SSE stream completes) and in
+`loadHistory` (when restoring prior messages). It is NOT called during incremental
+streaming -- links are only transformed on the final render.
+
+This approach means a list of 20 dataset links each gets its own reference section
+immediately after the list entry, rather than a single large reference section at the
+end of the entire message.
+
+---
+
+#### Removed: CSS p+ul divider lines
+
+The `p + ul`, `p + ol`, `p + table`, `p + h1`...`p + h4` CSS block that added a
+1px border-top line before structural elements was removed. The dividers were visually
+noisy and inconsistent with modern chat UI conventions.
 
 ---
 
@@ -954,7 +1125,8 @@ it and attaches the `Set-Cookie` header to the outgoing response.
 
 ### Phase 10 -- Multi-Provider LLM Support and RAG-Only Mode
 
-**Status:** Code-complete, live-tested, and display-polished (2026-04-09). 205 tests, 84% coverage.
+**Status:** Code-complete, live-tested, and display-polished (2026-04-09). Test count superseded by Display Polish entry
+above.
 
 ---
 

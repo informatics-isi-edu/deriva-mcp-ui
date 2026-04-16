@@ -11,7 +11,7 @@ DERIVA catalogs without needing a desktop MCP client.
 ## Features
 
 - Standard web login via Credenza (OAuth 2.0 + PKCE -- no token pasting)
-- Streaming responses via Server-Sent Events
+- Streaming responses via Server-Sent Events; press ESC to stop generation mid-stream
 - Full tool-calling loop: the LLM invokes DERIVA tools transparently; tool calls are
   shown in collapsible blocks in the UI
 - Three operating tiers (auto-detected from config, or forced via `DERIVA_CHATBOT_MODE`):
@@ -27,6 +27,14 @@ DERIVA catalogs without needing a desktop MCP client.
 - Conversation history preserved server-side across the browser session and across
   Credenza token re-authentication
 - Multiple session storage backends: memory (default), Redis/Valkey, PostgreSQL, SQLite
+- Centered chat column (65 rem) with right-aligned user messages -- layout consistent
+  with modern chat UIs; user message alignment is configurable
+- Inline hyperlinks rendered as clickable numbered reference bubbles with a collapsed
+  "References" section after each block -- no raw blue hyperlinks in responses
+- Auto-resizing message input; no Send button (Enter to send, ESC to stop)
+- Montserrat font, 1.6 line-height
+- Fully configurable branding: header color, input area color, chat background,
+  response card style, and logo URL
 
 ## Requirements
 
@@ -34,7 +42,7 @@ DERIVA catalogs without needing a desktop MCP client.
 - A running [deriva-mcp-core](https://github.com/informatics-isi-edu/deriva-mcp-core)
   instance reachable over HTTP
 - A [Credenza](https://github.com/informatics-isi-edu/credenza) instance for
-  authentication
+  authentication (optional -- omit for anonymous/public deployments)
 - An LLM API key (Anthropic, OpenAI, etc.) **or** a local Ollama (or similar) instance -- not
   required for RAG-only mode
 
@@ -60,9 +68,15 @@ All configuration is via environment variables with the `DERIVA_CHATBOT_` prefix
 
 ### Required
 
+| Variable                 | Description                            |
+|--------------------------|----------------------------------------|
+| `DERIVA_CHATBOT_MCP_URL` | Base URL of the deriva-mcp-core server |
+
+The following are required only when Credenza authentication is enabled
+(i.e., when `DERIVA_CHATBOT_CREDENZA_URL` is set):
+
 | Variable                      | Description                                                    |
 |-------------------------------|----------------------------------------------------------------|
-| `DERIVA_CHATBOT_MCP_URL`      | Base URL of the deriva-mcp-core server                         |
 | `DERIVA_CHATBOT_CREDENZA_URL` | Base URL of the Credenza instance                              |
 | `DERIVA_CHATBOT_CLIENT_ID`    | OAuth client ID registered in Credenza                         |
 | `DERIVA_CHATBOT_MCP_RESOURCE` | Resource URI for the MCP server (must match MCP server config) |
@@ -88,16 +102,37 @@ Set both variables to anchor the chatbot to a specific catalog:
 | `DERIVA_CHATBOT_DEFAULT_CATALOG_ID`    | Catalog ID or alias                            |
 | `DERIVA_CHATBOT_DEFAULT_CATALOG_LABEL` | Display name shown in the UI header (optional) |
 
+### Auth and access control
+
+| Variable                          | Default | Description                                                                                |
+|-----------------------------------|---------|--------------------------------------------------------------------------------------------|
+| `DERIVA_CHATBOT_ALLOW_ANONYMOUS`  | `false` | When true, unauthenticated users get an anonymous session even when Credenza is configured |
+| `DERIVA_CHATBOT_ALLOW_RAG_TOGGLE` | `false` | When true, users in LLM/local tier can switch to RAG-only mode per session from the UI     |
+
+### Branding and UI
+
+| Variable                             | Default                  | Description                                                                          |
+|--------------------------------------|--------------------------|--------------------------------------------------------------------------------------|
+| `DERIVA_CHATBOT_HEADER_TITLE`        | `DERIVA Data Assistant`  | Text shown in the header bar                                                         |
+| `DERIVA_CHATBOT_HEADER_LOGO_URL`     | `static/deriva-logo.png` | Logo URL; must be `static/<filename>` or `https://` (no other schemes)               |
+| `DERIVA_CHATBOT_HEADER_BG_COLOR`     | `#1e3a5f`                | CSS color for the header bar background                                              |
+| `DERIVA_CHATBOT_INPUT_AREA_BG_COLOR` | `#1e3a5f`                | CSS color for the input area background and textarea border accent                   |
+| `DERIVA_CHATBOT_CHAT_BG_COLOR`       | `#f5f5f5`                | CSS color for the chat thread area background                                        |
+| `DERIVA_CHATBOT_CODE_THEME`          | `vs2015`                 | highlight.js theme name for code block syntax highlighting (e.g. `github`, `vs`)     |
+| `DERIVA_CHATBOT_SHOW_RESPONSE_CARDS` | `false`                  | When true, assistant responses are rendered in styled card bubbles                   |
+| `DERIVA_CHATBOT_CHAT_ALIGN_LEFT`     | `false`                  | When true, user messages are left-aligned (default: right-aligned, matching ChatGPT) |
+
 ### Tuning
 
-| Variable                             | Default  | Description                                                          |
-|--------------------------------------|----------|----------------------------------------------------------------------|
-| `DERIVA_CHATBOT_MAX_HISTORY_TURNS`   | `10`     | Conversation turns retained per session                              |
-| `DERIVA_CHATBOT_MAX_MESSAGE_LENGTH`  | `10000`  | Maximum user message length in characters                            |
-| `DERIVA_CHATBOT_SESSION_TTL`         | `28800`  | Server-side session TTL in seconds (default 8h)                      |
-| `DERIVA_CHATBOT_STORAGE_BACKEND`     | `memory` | Session backend: `memory`, `redis`, `valkey`, `postgresql`, `sqlite` |
-| `DERIVA_CHATBOT_STORAGE_BACKEND_URL` |          | Connection URL for the selected backend                              |
-| `DERIVA_CHATBOT_DEBUG`               | `false`  | Enable debug logging                                                 |
+| Variable                             | Default  | Description                                                           |
+|--------------------------------------|----------|-----------------------------------------------------------------------|
+| `DERIVA_CHATBOT_MAX_HISTORY_TURNS`   | `10`     | Conversation turns retained per session                               |
+| `DERIVA_CHATBOT_MAX_MESSAGE_LENGTH`  | `10000`  | Maximum user message length in characters                             |
+| `DERIVA_CHATBOT_SESSION_TTL`         | `28800`  | Server-side session TTL in seconds (default 8h)                       |
+| `DERIVA_CHATBOT_HISTORY_TTL`         | `604800` | History-only TTL in seconds; history survives session expiry (7 days) |
+| `DERIVA_CHATBOT_STORAGE_BACKEND`     | `memory` | Session backend: `memory`, `redis`, `valkey`, `postgresql`, `sqlite`  |
+| `DERIVA_CHATBOT_STORAGE_BACKEND_URL` |          | Connection URL for the selected backend                               |
+| `DERIVA_CHATBOT_DEBUG`               | `false`  | Enable debug logging                                                  |
 
 ### Networking (Docker / internal hostnames)
 
@@ -127,6 +162,14 @@ redis://localhost:6379/0
 postgresql://user:pass@host/dbname
 sqlite:///path/to/sessions.db
 ```
+
+### Logging
+
+| Variable                             | Default                    | Description                                                     |
+|--------------------------------------|----------------------------|-----------------------------------------------------------------|
+| `DERIVA_CHATBOT_APP_USE_SYSLOG`      | `false`                    | Enable syslog (LOCAL1) for app logs -- leave false under Docker |
+| `DERIVA_CHATBOT_ACCESS_LOGFILE_PATH` | `deriva-mcp-ui-access.log` | Path for rotating uvicorn access log file                       |
+| `DERIVA_CHATBOT_ACCESS_USE_SYSLOG`   | `false`                    | Enable syslog (LOCAL2) for access logs                          |
 
 ## Running
 
@@ -164,6 +207,7 @@ deriva-mcp-ui:
     DERIVA_CHATBOT_DEFAULT_HOSTNAME: data.example.org
     DERIVA_CHATBOT_DEFAULT_CATALOG_ID: "1"
     DERIVA_CHATBOT_DEFAULT_CATALOG_LABEL: "Example Catalog"
+    DERIVA_CHATBOT_HEADER_BG_COLOR: "#1e3a5f"
     DERIVA_CHATBOT_STORAGE_BACKEND: redis
     DERIVA_CHATBOT_STORAGE_BACKEND_URL: redis://redis:6379/0
 ```
@@ -253,8 +297,46 @@ DERIVA (ERMrest, Hatrac)
 ```
 
 The UI service is a stateless MCP client: each chat turn opens a fresh HTTP connection
-to the MCP server, runs the Claude tool-calling loop, streams text back via SSE, then
+to the MCP server, runs the LiteLLM tool-calling loop, streams text back via SSE, then
 closes. No persistent MCP session is maintained.
+
+### Package structure
+
+```
+deriva-mcp-ui/
++-- pyproject.toml
++-- Dockerfile
++-- docs/
+|   +-- workplan-deriva-mcp-ui.md
++-- src/
+    +-- deriva_mcp_ui/
+        +-- __init__.py
+        +-- server.py        # FastAPI app, route registration, lifespan
+        +-- config.py        # Settings (DERIVA_CHATBOT_* env vars, pydantic-settings)
+        +-- auth.py          # Credenza OAuth client: /login, /callback, /logout routes
+        +-- chat.py          # LiteLLM tool-calling loop, RAG-only path, SSE streaming
+        +-- mcp_client.py    # MCP client: connect, list_tools, call_tool, open_session
+        +-- audit.py         # Structured audit event logging
+        +-- storage/         # Session store backends
+        |   +-- __init__.py  # STORAGE_BACKENDS registry + factory
+        |   +-- base.py      # SessionStore protocol + Session dataclass
+        |   +-- memory.py
+        |   +-- redis.py
+        |   +-- valkey.py
+        |   +-- postgresql.py
+        |   +-- sqlite.py
+        +-- static/
+            +-- index.html   # Chat UI shell (branding injected at request time)
+            +-- chat.js      # SSE client, message rendering, link transform, login state
+            +-- deriva-logo.png
+```
+
+### Template injection
+
+Branding config values are injected into `index.html` at request time in the `GET /`
+route (`server.py`). Placeholders such as `{{HEADER_BG_COLOR}}` are replaced with
+`html.escape()`-sanitized values. This avoids a build step while still supporting
+per-deployment customization.
 
 ## Development
 
