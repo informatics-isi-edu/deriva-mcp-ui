@@ -329,6 +329,48 @@ def test_set_rag_mode_ignored_when_toggle_disabled():
     assert resp.json()["rag_mode_active"] is False
 
 
+def test_rag_only_when_anonymous_status_anon():
+    """Anonymous session reports rag_mode_active=True when rag_only_when_anonymous is set."""
+    settings = _test_settings(rag_only_when_anonymous=True)
+    app = create_app(settings)
+    app.state.store = MemorySessionStore(ttl=settings.session_ttl)
+    now = time.time()
+    session = Session(user_id="anon-1", bearer_token=None, created_at=now, last_active=now)
+    app.dependency_overrides[require_session] = lambda: session
+
+    data = TestClient(app).get("/session-info").json()
+    assert data["rag_mode_active"] is True
+    assert data["rag_toggle_available"] is False
+
+
+def test_rag_only_when_anonymous_status_authenticated():
+    """Authenticated session reports rag_mode_active=False when rag_only_when_anonymous is set."""
+    settings = _test_settings(rag_only_when_anonymous=True)
+    app = create_app(settings)
+    app.state.store = MemorySessionStore(ttl=settings.session_ttl)
+    now = time.time()
+    session = Session(user_id="alice", bearer_token="tok", created_at=now, last_active=now)
+    app.dependency_overrides[require_session] = lambda: session
+
+    data = TestClient(app).get("/session-info").json()
+    assert data["rag_mode_active"] is False
+
+
+def test_rag_only_when_anonymous_blocks_toggle():
+    """POST /rag-mode is ignored for anonymous sessions when rag_only_when_anonymous is set."""
+    settings = _test_settings(allow_rag_toggle=True, rag_only_when_anonymous=True)
+    app = create_app(settings)
+    store = MemorySessionStore(ttl=settings.session_ttl)
+    app.state.store = store
+    now = time.time()
+    session = Session(user_id="anon-1", bearer_token=None, created_at=now, last_active=now)
+    app.dependency_overrides[require_session] = lambda: session
+
+    resp = TestClient(app).post("/rag-mode", json={"enabled": False})
+    assert resp.status_code == 200
+    assert resp.json()["rag_mode_active"] is True  # forced, cannot be cleared
+
+
 # ---------------------------------------------------------------------------
 # /history -- GET and DELETE
 # ---------------------------------------------------------------------------

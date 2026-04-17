@@ -80,6 +80,12 @@ class Settings(BaseSettings):
     # False (default) will lock the operating tier and hide the toggle control entirely.
     allow_rag_toggle: bool = False
 
+    # When True, anonymous (unauthenticated) sessions are forced into RAG-only mode
+    # regardless of the server operating tier.  Authenticating lifts the restriction
+    # so the user gets full LLM access.  Useful when you want to expose search to the
+    # public but reserve LLM tool-calling for logged-in users.
+    rag_only_when_anonymous: bool = False
+
     # Tuning
     max_history_turns: int = 10
     max_message_length: int = 10000

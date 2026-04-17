@@ -1122,6 +1122,25 @@ def test_format_rag_response_all_below_threshold_shown_anyway():
     assert "show all results" not in resp
 
 
+def test_format_rag_response_web_content_shown_below_threshold():
+    """Web-content results with doc_type field are shown even below the relevance threshold."""
+    results = [
+        {"text": "High relevance catalog record.", "source": "enriched:fb:1:isa:dataset",
+         "doc_type": "catalog-data", "score": 0.85},
+        {"text": "Web page about downloading data from FaceBase.", "source": "https://facebase.org/help",
+         "doc_type": "web-content", "url": "https://facebase.org/help", "score": 0.42},
+        {"text": "User guide section on browsing.", "source": "docs/guide.md",
+         "doc_type": "user-guide", "score": 0.38},
+    ]
+    resp = _format_rag_response("how do I download data?", results)
+    # Catalog record above threshold -- always shown
+    assert "enriched:fb:1:isa:dataset" in resp or "Catalog Records" in resp
+    # Web/user-guide below threshold -- must still be shown
+    assert "facebase.org/help" in resp
+    assert "guide.md" in resp
+    assert "additional source" not in resp
+
+
 def test_format_rag_response_show_all_includes_low_scores():
     """show_all=True renders sources below the relevance threshold."""
     results = [
@@ -1343,3 +1362,86 @@ async def test_rag_only_handles_search_failure():
 
     text = _collect_text(events)
     assert "No relevant documentation found" in text
+
+
+@pytest.mark.asyncio
+async def test_rag_only_when_anonymous_routes_to_rag():
+    """rag_only_when_anonymous forces RAG path for sessions with no bearer token."""
+    from deriva_mcp_ui.config import Settings as _S
+    s = _S(mcp_url="http://mcp:8000", llm_api_key="sk-test",
+           default_hostname="facebase.org", default_catalog_id="1",
+           rag_only_when_anonymous=True, max_history_turns=5)
+    assert s.operating_tier == "llm"
+
+    now = time.time()
+    anon_sess = Session(user_id="anon-1", bearer_token=None, created_at=now, last_active=now)
+    anon_sess.schema_primed = True
+
+    rag_results = json.dumps([
+        {"text": "You can query data using the entity browser.", "source": "guide.md", "score": 0.8},
+    ])
+
+    async def _mock_call_tool(token, name, args, url, **kw):
+        if name == "rag_search":
+            return rag_results
+        if name == "get_catalog_info":
+            return "catalog info"
+        return ""
+
+    with patch("deriva_mcp_ui.chat.call_tool", AsyncMock(side_effect=_mock_call_tool)):
+        events = []
+        async for ev in run_chat_turn("how do I query data?", anon_sess, s):
+            events.append(ev)
+
+    text = _collect_text(events)
+    assert "entity browser" in text
+
+
+@pytest.mark.asyncio
+async def test_rag_only_when_anonymous_does_not_affect_authenticated():
+    """rag_only_when_anonymous must not force RAG path for authenticated sessions."""
+    from deriva_mcp_ui.config import Settings as _S
+    s = _S(mcp_url="http://mcp:8000", llm_api_key="sk-test",
+           default_hostname="facebase.org", default_catalog_id="1",
+           rag_only_when_anonymous=True, max_history_turns=5)
+
+    auth_sess = _session()  # bearer_token="tok"
+
+    # If the session reaches the LLM path it will call open_session.
+    # If it mistakenly goes to RAG, open_session is never called and call_tool
+    # (rag_search) would be called instead.  We detect which path was taken.
+    rag_called = False
+
+    async def _mock_call_tool(token, name, args, url, **kw):
+        nonlocal rag_called
+        if name == "rag_search":
+            rag_called = True
+        return ""
+
+    open_session_called = False
+
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def _mock_open_session(*args, **kwargs):
+        nonlocal open_session_called
+        open_session_called = True
+        yield None
+
+    with (
+        patch("deriva_mcp_ui.chat.open_session", _mock_open_session),
+        patch("deriva_mcp_ui.chat.list_tools", AsyncMock(return_value=[])),
+        patch("deriva_mcp_ui.chat.call_tool", AsyncMock(side_effect=_mock_call_tool)),
+        patch("deriva_mcp_ui.chat.litellm") as mock_litellm,
+    ):
+        mock_litellm.acompletion = AsyncMock(
+            return_value=_text_stream(["authenticated response"])
+        )
+        mock_litellm.RateLimitError = litellm_rate_limit_error()
+        mock_litellm.ServiceUnavailableError = litellm_service_unavailable_error()
+        events = []
+        async for ev in run_chat_turn("tell me about the data", auth_sess, s):
+            events.append(ev)
+
+    assert open_session_called, "authenticated session should reach LLM path (open_session)"
+    assert not rag_called, "rag_search must not be called for authenticated session"

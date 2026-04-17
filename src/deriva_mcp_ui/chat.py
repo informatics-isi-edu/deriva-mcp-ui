@@ -173,47 +173,46 @@ def system_prompt(
         "If the user replies with a bare number after you presented a numbered list, "
         "interpret it as selecting that option -- not as a literal quantity. "
         "When polling background tasks, wait at least 5 seconds between checks."
-        "When outputting a list, do not prepend horizontal rules (---, ___, ***) to the list as a delimiter."
     )
-    rules.append(
-        "6. MANDATORY FORMATTING RULES"
-        "=="
-        "1. NO HORIZONTAL RULES IN MARKDOWN. Do NOT output any of these characters"
-        "   in sequence to create visual breaks:"
-        "   - Triple dashes: ---"
-        "   - Triple underscores: ___"
-        "   - Triple asterisks: ***"
-        "   WRONG (do not use):"
-        "   ```"
-        "   ## Heading"
-        "   ---"
-        "   Content here"
-        "   ```"
-        "   WRONG (do not use):"
-        "   ```"
-        "   1. First item"
-        "   ---"
-        "   2. Second item"
-        "   ```"
-        "   CORRECT (use instead):"
-        "   ```"
-        "   ## Heading"
-        "   "
-        "   Content here"
-        "   ```"
-        "   CORRECT (use instead):"
-        "   ```"
-        "   1. First item"
-        "   "
-        "   2. Second item"
-        "   ```"
-        "2. Use ONLY blank lines and heading hierarchy for visual separation."
-        "   A Markdown heading is ALWAYS followed immediately by its first line"
-        "   of content—never by any divider, blank line, or thematic break."
-        "3. Scan your entire response before outputting it. If you see ---,___,"
-        "   or *** on their own line or between content sections, remove them"
-        "   and replace with a blank line."
-    )
+    # rules.append(
+    #     "6. MANDATORY FORMATTING RULES"
+    #     "=="
+    #     "1. NO HORIZONTAL RULES IN MARKDOWN. Do NOT output any of these characters"
+    #     "   in sequence to create visual breaks:"
+    #     "   - Triple dashes: ---"
+    #     "   - Triple underscores: ___"
+    #     "   - Triple asterisks: ***"
+    #     "   WRONG (do not use):"
+    #     "   ```"
+    #     "   ## Heading"
+    #     "   ---"
+    #     "   Content here"
+    #     "   ```"
+    #     "   WRONG (do not use):"
+    #     "   ```"
+    #     "   1. First item"
+    #     "   ---"
+    #     "   2. Second item"
+    #     "   ```"
+    #     "   CORRECT (use instead):"
+    #     "   ```"
+    #     "   ## Heading"
+    #     "   "
+    #     "   Content here"
+    #     "   ```"
+    #     "   CORRECT (use instead):"
+    #     "   ```"
+    #     "   1. First item"
+    #     "   "
+    #     "   2. Second item"
+    #     "   ```"
+    #     "2. Use ONLY blank lines and heading hierarchy for visual separation."
+    #     "   A Markdown heading is ALWAYS followed immediately by its first line"
+    #     "   of content—never by any divider, blank line, or thematic break."
+    #     "3. Scan your entire response before outputting it. If you see ---,___,"
+    #     "   or *** on their own line or between content sections, remove them"
+    #     "   and replace with a blank line."
+    # )
     rules.append(
         "7. RAG SEARCH RESULT FORMAT. When presenting rag_search results, use a NUMBERED "
         "list (1. 2. 3. ...) ordered by relevance score descending. For EVERY result item: "
@@ -282,7 +281,6 @@ def system_prompt(
         "The schema is already loaded in the system prompt. You have all table names, columns, and foreign key "
         "relationships. Proceed directly to writing queries—do not make schema-fetching calls (get_schema, get_table, "
         "list_schemas, etc.)."
-        "BEFORE outputting any response, scan for horizontal rules (---, ___, ***) and remove them. Use blank lines only."
     )
     base += "\n".join(rules)
 
@@ -505,15 +503,11 @@ _RAG_SEARCH_LIMIT = 100
 # from consuming all result slots and hiding lower-scoring results of other types.
 # Applied in score order, so the best N of each type are always shown.
 _PER_TYPE_CAP: dict[str, int] = {
-    "enriched": 5,   # catalog dataset records (enricher output)
-    "schema": 2,     # schema index results
+    "catalog-data": 5,  # catalog dataset records
+    "schema": 2,        # schema index results
 }
 _PER_TYPE_CAP_DEFAULT = 5  # web crawl, documentation, GitHub sources, etc.
 
-
-def _result_type_key(source: str) -> str:
-    """Return the type bucket for a source key (first colon-delimited segment)."""
-    return source.split(":")[0] if ":" in source else "other"
 
 # Regex patterns for question-type detection
 import re
@@ -797,7 +791,9 @@ def _format_rag_response(
     # URL (Chaise record page).  Grouping by URL ensures each dataset record
     # gets its own section.  For chunks without a URL, fall back to source key.
     # group_sources maps group_key -> canonical source key (for label derivation)
+    # group_doc_types maps group_key -> doc_type tag (used for type cap + threshold exemption)
     group_sources: dict[str, str] = {}
+    group_doc_types: dict[str, str] = {}
     source_groups: dict[str, list[dict[str, Any]]] = {}
     source_scores: dict[str, float] = {}
     source_urls: dict[str, str] = {}
@@ -809,6 +805,8 @@ def _format_rag_response(
         group_key = url if url else source
         score = float(entry.get("score", 0.0))
         group_sources.setdefault(group_key, source)
+        _dt = entry.get("doc_type", "") or ("catalog-data" if source.startswith("enriched:") else "")
+        group_doc_types.setdefault(group_key, _dt)
         source_groups.setdefault(group_key, []).append(entry)
         if score > source_scores.get(group_key, 0.0):
             source_scores[group_key] = score
@@ -832,7 +830,7 @@ def _format_rag_response(
         within_cap: list[str] = []
         beyond_cap: list[str] = []
         for _s in ordered_sources:
-            _tk = _result_type_key(group_sources[_s])
+            _tk = group_doc_types.get(_s, "")
             _cap = _PER_TYPE_CAP.get(_tk, _PER_TYPE_CAP_DEFAULT)
             _n = type_counts.get(_tk, 0)
             if _n < _cap:
@@ -845,8 +843,15 @@ def _format_rag_response(
         # If every within-cap source falls below the threshold, show them all
         # rather than presenting an empty result set -- the threshold only
         # filters when there is at least one source above it.
-        above = [s for s in within_cap if source_scores[s] >= _HIGH_RELEVANCE_THRESHOLD]
-        below = [s for s in within_cap if source_scores[s] < _HIGH_RELEVANCE_THRESHOLD]
+        # Web/doc types (web-content, user-guide) are exempt -- they are already
+        # capped at their top N and should always be shown regardless of score.
+        _THRESHOLD_EXEMPT = {"web-content", "user-guide"}
+        above = [s for s in within_cap
+                 if source_scores[s] >= _HIGH_RELEVANCE_THRESHOLD
+                 or group_doc_types.get(s) in _THRESHOLD_EXEMPT]
+        below = [s for s in within_cap
+                 if source_scores[s] < _HIGH_RELEVANCE_THRESHOLD
+                 and group_doc_types.get(s) not in _THRESHOLD_EXEMPT]
         if above:
             shown_sources = above
             hidden_sources = below + beyond_cap
@@ -857,7 +862,7 @@ def _format_rag_response(
     # Render each source into a per-type bucket for grouped output.
     # Groups are emitted in the order their first member appears in shown_sources.
     _GROUP_LABEL: dict[str, str] = {
-        "enriched": "Catalog Records",
+        "catalog-data": "Catalog Records",
         "schema": "Schema",
         "web-content": "Web Pages",
         "user-guide": "Documentation",
@@ -961,7 +966,9 @@ def _format_rag_response(
             if _q_terms and any(term in _t_lower for term in _q_terms):
                 title_chunk_matched = True
 
-        _doc_type = entries[0].get("doc_type", "") if entries else ""
+        _doc_type = (entries[0].get("doc_type", "") if entries else "") or (
+            "catalog-data" if is_enriched else ""
+        )
 
         # Metadata-only sections from the enricher that add no search context.
         _ENRICHED_SKIP = frozenset({
@@ -1085,9 +1092,7 @@ def _format_rag_response(
             entry_lines.append("\n\n".join(body))
 
         # Route into the appropriate display group.
-        _doc_type_key = _doc_type if _doc_type in _GROUP_LABEL else None
-        _src_key = _result_type_key(source)
-        _group_name = _GROUP_LABEL.get(_src_key) or _GROUP_LABEL.get(_doc_type_key or "") or "Other"
+        _group_name = _GROUP_LABEL.get(_doc_type, "") or "Other"
         if _group_name not in group_buckets:
             group_buckets[_group_name] = []
             group_order.append(_group_name)
@@ -1099,6 +1104,7 @@ def _format_rag_response(
     for _gname in group_order:
         _glines = group_buckets[_gname]
         _gcount = sum(1 for l in _glines if l.startswith("####"))
+        parts.append("---")
         parts.append(f"### {_gname} ({_gcount})")
         parts.extend(_glines)
 
@@ -1107,6 +1113,7 @@ def _format_rag_response(
     if hidden_count > 0 and not show_all:
         low_score = min(source_scores[s] for s in hidden_sources)
         high_score = max(source_scores[s] for s in hidden_sources)
+        parts.append("---")
         parts.append(
             f"\n**{hidden_count} additional source(s) with lower relevance "
             f"({low_score:.2f}\u2013{high_score:.2f}) were not shown.** "
@@ -1232,9 +1239,13 @@ async def run_chat_turn(
     Raises MCPAuthError if the MCP server rejects the bearer token.
     """
     # RAG-only mode: bypass the LLM loop entirely.
-    # Applies when the server tier is rag_only OR the user has toggled the
-    # per-session override (only reachable when allow_rag_toggle is True).
-    if settings.operating_tier == "rag_only" or session.rag_only_override:
+    # Applies when the server tier is rag_only, OR the user has toggled the
+    # per-session override (only reachable when allow_rag_toggle is True), OR
+    # the user is anonymous and rag_only_when_anonymous is enabled.
+    is_anonymous = session.bearer_token is None
+    if (settings.operating_tier == "rag_only"
+            or session.rag_only_override
+            or (settings.rag_only_when_anonymous and is_anonymous)):
         async for event in _rag_only_response(user_message, session, settings):
             yield event
         return

@@ -215,7 +215,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         full_name = cred.get("full_name") or client_block.get("full_name") or ""
         email = cred.get("email") or client_block.get("email") or ""
         is_anonymous = session.bearer_token is None
-        rag_toggle_available = s.allow_rag_toggle and s.operating_tier in ("llm", "local")
+        rag_toggle_available = s.allow_rag_toggle and s.operating_tier in ("llm", "local") and not (s.rag_only_when_anonymous and is_anonymous)
+        forced_rag_anon = s.rag_only_when_anonymous and is_anonymous
+        rag_mode_active = s.operating_tier == "rag_only" or session.rag_only_override or forced_rag_anon
         return JSONResponse(
             {
                 "user_id": session.user_id,
@@ -229,7 +231,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "credenza_session": cred,
                 "login_available": s.credenza_configured and is_anonymous,
                 "rag_toggle_available": rag_toggle_available,
-                "rag_mode_active": s.operating_tier == "rag_only" or session.rag_only_override,
+                "rag_mode_active": rag_mode_active,
+                "rag_only_when_anonymous": s.rag_only_when_anonymous,
                 "code_theme": s.code_theme,
                 "show_response_cards": s.show_response_cards,
                 "chat_align_left": s.chat_align_left,
@@ -245,10 +248,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """
         s: Settings = request.app.state.settings
         store = request.app.state.store
-        if s.allow_rag_toggle and s.operating_tier in ("llm", "local"):
+        is_anonymous = session.bearer_token is None
+        forced_rag_anon = s.rag_only_when_anonymous and is_anonymous
+        if s.allow_rag_toggle and s.operating_tier in ("llm", "local") and not forced_rag_anon:
             session.rag_only_override = body.enabled
             await store.set(user_session_key(session.user_id), session)
-        rag_mode_active = s.operating_tier == "rag_only" or session.rag_only_override
+        rag_mode_active = s.operating_tier == "rag_only" or session.rag_only_override or forced_rag_anon
         return JSONResponse({"rag_mode_active": rag_mode_active})
 
     @app.get("/history")

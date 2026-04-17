@@ -141,6 +141,11 @@
       catalogBar.style.display = "flex";
     }
 
+    const loginHint = document.getElementById("search-mode-login-hint");
+    if (loginHint && info.rag_only_when_anonymous && info.login_available) {
+      loginHint.style.display = "";
+    }
+
     function setRagModeActive(active) {
       input.placeholder = active ? "Enter search terms..." : "Ask a question...";
       if (active) {
@@ -225,7 +230,7 @@
           var summaryLabel = document.createElement("summary");
           summaryLabel.className = "msg-tools-container-summary";
           var names = msg.tools || [];
-          summaryLabel.textContent = names.length + " tool call" + (names.length !== 1 ? "s" : "");
+          summaryLabel.textContent = "Used " + names.length + " tool" + (names.length !== 1 ? "s" : "");
           summary.appendChild(summaryLabel);
           var toolList = document.createElement("div");
           toolList.className = "msg-tools";
@@ -434,7 +439,7 @@
     const running = toolsEl.querySelectorAll(".tool-call-status").length -
                     [...toolsEl.querySelectorAll(".tool-call-status")]
                       .filter(s => s.textContent === "done").length;
-    const label = `${total} tool call${total !== 1 ? "s" : ""}`;
+    const label = `Used ${total} tool${total !== 1 ? "s" : ""}`;
     summary.textContent = running > 0 ? `${label} (${running} running)` : label;
   }
 
