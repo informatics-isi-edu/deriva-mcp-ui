@@ -121,7 +121,7 @@ def test_session_info_includes_identity_fields():
     resp = client.get("/session-info")
     assert resp.status_code == 200
     data = resp.json()
-    assert data["display_name"] == "jdoe"
+    assert data["display_name"] == "Jane Doe"
     assert data["full_name"] == "Jane Doe"
     assert data["email"] == "jane@example.org"
     assert data["hostname"] == "example.org"

@@ -428,17 +428,17 @@ def _extract_user_id(credenza_data: dict) -> str:
 def _extract_display_name(credenza_data: dict) -> str:
     """Return a human-readable display name from a Credenza session dict.
 
-    Non-legacy: preferred_username > full_name > email.
-    Legacy: client.display_name > client.full_name > client.email.
+    Non-legacy: full_name > preferred_username > email.
+    Legacy: client.full_name > client.display_name > client.email.
     Falls back to "".
     """
     client_block = credenza_data.get("client") or {}
     return (
-        credenza_data.get("preferred_username")
-        or credenza_data.get("full_name")
+        credenza_data.get("full_name")
+        or credenza_data.get("preferred_username")
         or credenza_data.get("email")
-        or client_block.get("display_name")
         or client_block.get("full_name")
+        or client_block.get("display_name")
         or client_block.get("email")
         or ""
     )
