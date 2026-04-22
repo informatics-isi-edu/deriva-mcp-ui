@@ -403,7 +403,7 @@ def main() -> None:  # pragma: no cover
     _init_logging(debug=settings.debug, app_use_syslog=settings.app_use_syslog)
     _init_access_logging(settings)
 
-    init_audit_logger(use_syslog=True)
+    init_audit_logger(use_syslog=settings.access_use_syslog)
     app = create_app(settings)
     uvicorn.run(
         app,
