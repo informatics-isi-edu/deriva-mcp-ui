@@ -1,15 +1,21 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{{HEADER_TITLE}}</title>
+  <!-- Apply stored theme before first paint to avoid flash -->
+  <script>(function(){var t=localStorage.getItem("deriva-theme")||"auto";document.documentElement.setAttribute("data-theme",t==="dark"?"dark":t==="light"?"light":window.matchMedia("(prefers-color-scheme:dark)").matches?"dark":"light");}());</script>
+  <!-- DaisyUI theme CSS variables only (no component styles) -->
+  <link href="https://cdn.jsdelivr.net/npm/daisyui@4/dist/themes.min.css" rel="stylesheet" type="text/css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600&display=swap" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <style>
+    /* No --p overrides needed: our light/dark themes use hardcoded hex; other DaisyUI themes use their own oklch --p */
+
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     body {
@@ -25,6 +31,7 @@
     /* ---- Header ---- */
     #header {
       background: {{HEADER_BG_COLOR}};
+      background: linear-gradient(to right, {{HEADER_BG_COLOR}}, hsl(from {{HEADER_BG_COLOR}} h s calc(l + 15)));
       color: #fff;
       padding: 0.75rem 1.25rem;
       display: flex;
@@ -47,15 +54,16 @@
     #header h1 { font-size: 1rem; font-weight: 600; letter-spacing: 0.02em; line-height: 1; margin-top: -2px; }
     #header h1 a { text-decoration: none; }
     #header h1 a:hover { text-decoration: underline; }
-    #header-right { display: flex; align-items: center; gap: 1rem; font-size: 0.85rem; opacity: 0.85; }
+    #header-right { display: flex; align-items: center; gap: 1rem; font-size: 0.85rem; opacity: 0.85; position: relative; }
     #user-label { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: default; }
     #clear-history-btn {
       background: none;
       border: 1px solid rgba(168, 196, 232, 0.4);
       color: #a8c4e8;
       border-radius: 4px;
-      padding: 0.2rem 0.5rem;
+      padding: 0 0.5rem;
       font-size: 0.8rem;
+      height: 1.6rem;
       cursor: pointer;
     }
     #clear-history-btn:hover { background: rgba(255, 255, 255, 0.1); }
@@ -389,6 +397,7 @@
     /* ---- Input area ---- */
     #input-area {
       background: {{INPUT_AREA_BG_COLOR}};
+      background: linear-gradient(to right, {{INPUT_AREA_BG_COLOR}}, hsl(from {{INPUT_AREA_BG_COLOR}} h s calc(l + 15)));
       padding: 0.75rem 1.25rem;
       flex-shrink: 0;
     }
@@ -419,6 +428,186 @@
       border-radius: 0;
       padding: 0.3rem 0;
     }
+
+    /* ---- Settings button + dropdown ---- */
+    #settings-btn {
+      background: none;
+      border: 1px solid rgba(168, 196, 232, 0.4);
+      color: #a8c4e8;
+      border-radius: 4px;
+      padding: 0 0.45rem;
+      font-size: 1rem;
+      height: 1.6rem;
+      line-height: 1;
+      cursor: pointer;
+    }
+    #settings-btn:hover { background: rgba(255, 255, 255, 0.1); }
+    #settings-dropdown {
+      display: none;
+      position: absolute;
+      top: calc(100% + 8px);
+      right: 0;
+      background: #fff;
+      border: 1px solid #ccd;
+      border-radius: 6px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+      min-width: 140px;
+      max-height: 22rem;
+      overflow-y: auto;
+      z-index: 100;
+      padding: 0.4rem 0;
+    }
+    #settings-dropdown.open { display: block; }
+    .settings-section-label {
+      font-size: 0.72rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: #999;
+      padding: 0.3rem 0.85rem 0.15rem;
+    }
+    .settings-divider {
+      border: none;
+      border-top: 1px solid #eee;
+      margin: 0.3rem 0;
+    }
+    .theme-opt {
+      display: block;
+      width: 100%;
+      text-align: left;
+      padding: 0.35rem 1.1rem;
+      font-size: 0.82rem;
+      background: none;
+      border: none;
+      cursor: pointer;
+      color: #333;
+    }
+    .theme-opt:hover { background: #eef3fa; }
+    .theme-opt.active { font-weight: 600; color: #1e3a5f; }
+
+    /* ---- Our dark theme: calibrated overrides ---- */
+    [data-theme="dark"] body { color: #e0e0e0; background: #111827; }
+
+    [data-theme="dark"] #search-mode-banner { background: #1a2d45; border-bottom-color: #2a4a70; color: #90b8e0; }
+    [data-theme="dark"] #search-mode-banner a { color: #90b8e0; }
+
+    [data-theme="dark"] #catalog-bar { background: #1e2433; border-bottom-color: #2d3748; }
+    [data-theme="dark"] #catalog-bar label { color: #aaa; }
+    [data-theme="dark"] #catalog-bar input { background: #252d3d; border-color: #444; color: #e0e0e0; }
+
+    [data-theme="dark"] .msg-user { background: #1f3d6e; color: #e0e8f0; border-color: #2a5080; }
+
+    [data-theme="dark"] .msg-assistant { background: #1e2533; border-color: #2d3748; }
+    [data-theme="dark"] .msg-assistant pre { background: #161d2d; }
+    [data-theme="dark"] .msg-assistant .pre-wrapper .copy-btn { background: #2a3448; color: #ccc; }
+    [data-theme="dark"] .msg-assistant .pre-wrapper .copy-btn.copied { background: #2d6e31; color: #fff; }
+    [data-theme="dark"] .msg-assistant a { border-bottom-color: #555; }
+    [data-theme="dark"] .msg-assistant th, [data-theme="dark"] .msg-assistant td { border-color: #3d4a5d; }
+    [data-theme="dark"] .msg-assistant th { background: #252d3d; }
+    [data-theme="dark"] .msg-assistant h4 { color: #bbb; }
+    [data-theme="dark"] .msg-assistant hr { border-top-color: #2d3748; }
+
+    [data-theme="dark"] .ref-num { background: #3a5a7a; }
+    [data-theme="dark"] a.ref-bubble:hover .ref-num { background: #2a4a6a; }
+    [data-theme="dark"] .ref-section { color: #999; }
+    [data-theme="dark"] .ref-section summary { color: #777; }
+    [data-theme="dark"] .ref-section summary::before { color: #666; }
+    [data-theme="dark"] .ref-section summary:hover { color: #aaa; }
+    [data-theme="dark"] .ref-section .ref-list a { color: #90b8e0; }
+
+    [data-theme="dark"] .msg-tools-container-summary { color: #99aabb; }
+    [data-theme="dark"] .tool-call { border-color: #2d3a5d; background: #1a2235; }
+    [data-theme="dark"] .tool-call-summary code { color: #90b8e0; }
+    [data-theme="dark"] .tool-call-section { border-top-color: #2d3a5d; }
+    [data-theme="dark"] .tool-call-label { color: #999; }
+    [data-theme="dark"] .tool-call-section pre { background: #131a2a; }
+
+    [data-theme="dark"] .msg-error { background: #332200; border-color: #885500; color: #ffcc77; }
+    [data-theme="dark"] .loading-dots span { background: #555; }
+
+    [data-theme="dark"] #input-area { background: #1a2233; background: linear-gradient(to right, #1a2233, hsl(from #1a2233 h s calc(l + 15))); }
+    [data-theme="dark"] #message-input { background: #252d3d; color: #e0e0e0; border-color: #3a4a60; }
+    [data-theme="dark"] #message-input:focus { border-color: #4a6a9a; box-shadow: 0 0 0 1px rgba(74, 106, 154, 0.4); }
+    [data-theme="dark"] #message-input::placeholder { color: #666; }
+
+    [data-theme="dark"] #settings-dropdown { background: #1e2533; border-color: #2d3748; }
+    [data-theme="dark"] .settings-section-label { color: #666; }
+    [data-theme="dark"] .settings-divider { border-top-color: #2d3748; }
+    [data-theme="dark"] .theme-opt { color: #e0e0e0; }
+    [data-theme="dark"] .theme-opt:hover { background: #252d3d; }
+    [data-theme="dark"] .theme-opt.active { color: #90b8e0; }
+
+    /* ---- DaisyUI theme pass-through: all themes except our light/dark ----
+       DaisyUI v4 vars are bare oklch channels (e.g. --b1: 100% 0 0), not full color values.
+       Wrap each with oklch() once here; downstream rules use --_b1 etc. as valid colors. ---- */
+    html:not([data-theme="light"]):not([data-theme="dark"]) {
+      --_b1: oklch(var(--b1));
+      --_b2: oklch(var(--b2));
+      --_b3: oklch(var(--b3));
+      --_bc: oklch(var(--bc));
+      --_p:  oklch(var(--p));
+      --_pc: oklch(var(--pc));
+    }
+
+    html:not([data-theme="light"]):not([data-theme="dark"]) body { background: var(--_b1); color: var(--_bc); }
+
+    html:not([data-theme="light"]):not([data-theme="dark"]) #header { background: var(--_p); background: linear-gradient(to right, var(--_p), hsl(from var(--_p) h s calc(l + 15))); color: var(--_pc); }
+    html:not([data-theme="light"]):not([data-theme="dark"]) #clear-history-btn,
+    html:not([data-theme="light"]):not([data-theme="dark"]) #rag-toggle-btn,
+    html:not([data-theme="light"]):not([data-theme="dark"]) #settings-btn { color: color-mix(in oklch, var(--_pc) 80%, transparent); border-color: color-mix(in oklch, var(--_pc) 30%, transparent); }
+    html:not([data-theme="light"]):not([data-theme="dark"]) #clear-history-btn:hover,
+    html:not([data-theme="light"]):not([data-theme="dark"]) #rag-toggle-btn:hover,
+    html:not([data-theme="light"]):not([data-theme="dark"]) #settings-btn:hover { background: color-mix(in oklch, var(--_pc) 10%, transparent); }
+    html:not([data-theme="light"]):not([data-theme="dark"]) #logout-link { color: color-mix(in oklch, var(--_pc) 80%, transparent); }
+
+    html:not([data-theme="light"]):not([data-theme="dark"]) #search-mode-banner { background: var(--_b2); border-bottom-color: var(--_b3); color: var(--_p); }
+    html:not([data-theme="light"]):not([data-theme="dark"]) #search-mode-banner a { color: var(--_p); }
+
+    html:not([data-theme="light"]):not([data-theme="dark"]) #catalog-bar { background: var(--_b1); border-bottom-color: var(--_b3); }
+    html:not([data-theme="light"]):not([data-theme="dark"]) #catalog-bar label { color: color-mix(in oklch, var(--_bc) 65%, transparent); }
+    html:not([data-theme="light"]):not([data-theme="dark"]) #catalog-bar input { background: var(--_b1); border-color: var(--_b3); color: var(--_bc); }
+
+    html:not([data-theme="light"]):not([data-theme="dark"]) .msg-user { background: color-mix(in oklch, var(--_p) 25%, var(--_b1)); color: var(--_bc); border-color: color-mix(in oklch, var(--_p) 50%, var(--_b1)); }
+    html:not([data-theme="light"]):not([data-theme="dark"]) .msg-assistant { background: var(--_b2); border-color: var(--_b3); }
+    html:not([data-theme="light"]):not([data-theme="dark"]) .msg-assistant pre { background: var(--_b3); }
+    html:not([data-theme="light"]):not([data-theme="dark"]) .msg-assistant .pre-wrapper .copy-btn { background: var(--_b3); color: var(--_bc); }
+    html:not([data-theme="light"]):not([data-theme="dark"]) .msg-assistant a { border-bottom-color: color-mix(in oklch, var(--_bc) 30%, transparent); }
+    html:not([data-theme="light"]):not([data-theme="dark"]) .msg-assistant th,
+    html:not([data-theme="light"]):not([data-theme="dark"]) .msg-assistant td { border-color: var(--_b3); }
+    html:not([data-theme="light"]):not([data-theme="dark"]) .msg-assistant th { background: var(--_b2); }
+    html:not([data-theme="light"]):not([data-theme="dark"]) .msg-assistant h4 { color: color-mix(in oklch, var(--_bc) 65%, transparent); }
+    html:not([data-theme="light"]):not([data-theme="dark"]) .msg-assistant hr { border-top-color: var(--_b3); }
+
+    html:not([data-theme="light"]):not([data-theme="dark"]) .ref-num { background: color-mix(in oklch, var(--_p) 70%, transparent); }
+    html:not([data-theme="light"]):not([data-theme="dark"]) a.ref-bubble:hover .ref-num { background: color-mix(in oklch, var(--_p) 90%, transparent); }
+    html:not([data-theme="light"]):not([data-theme="dark"]) .ref-section { color: color-mix(in oklch, var(--_bc) 55%, transparent); }
+    html:not([data-theme="light"]):not([data-theme="dark"]) .ref-section summary { color: color-mix(in oklch, var(--_bc) 45%, transparent); }
+    html:not([data-theme="light"]):not([data-theme="dark"]) .ref-section summary::before { color: color-mix(in oklch, var(--_bc) 30%, transparent); }
+    html:not([data-theme="light"]):not([data-theme="dark"]) .ref-section summary:hover { color: color-mix(in oklch, var(--_bc) 65%, transparent); }
+    html:not([data-theme="light"]):not([data-theme="dark"]) .ref-section .ref-list a { color: var(--_p); }
+
+    html:not([data-theme="light"]):not([data-theme="dark"]) .msg-status { color: color-mix(in oklch, var(--_bc) 50%, transparent); }
+    html:not([data-theme="light"]):not([data-theme="dark"]) .msg-tools-container-summary { color: color-mix(in oklch, var(--_bc) 55%, transparent); }
+    html:not([data-theme="light"]):not([data-theme="dark"]) .msg-tools-container-summary::before { color: color-mix(in oklch, var(--_p) 60%, transparent); }
+    html:not([data-theme="light"]):not([data-theme="dark"]) .tool-call { border-color: var(--_b3); background: var(--_b2); }
+    html:not([data-theme="light"]):not([data-theme="dark"]) .tool-call-summary::before { color: color-mix(in oklch, var(--_p) 60%, transparent); }
+    html:not([data-theme="light"]):not([data-theme="dark"]) .tool-call-summary code { color: var(--_p); }
+    html:not([data-theme="light"]):not([data-theme="dark"]) .tool-call-status { color: color-mix(in oklch, var(--_bc) 45%, transparent); }
+    html:not([data-theme="light"]):not([data-theme="dark"]) .tool-call-section { border-top-color: var(--_b3); }
+    html:not([data-theme="light"]):not([data-theme="dark"]) .tool-call-label { color: color-mix(in oklch, var(--_bc) 50%, transparent); }
+    html:not([data-theme="light"]):not([data-theme="dark"]) .tool-call-section pre { background: var(--_b1); }
+    html:not([data-theme="light"]):not([data-theme="dark"]) .loading-dots span { background: color-mix(in oklch, var(--_bc) 35%, transparent); }
+
+    html:not([data-theme="light"]):not([data-theme="dark"]) #input-area { background: var(--_b2); background: linear-gradient(to right, var(--_b2), hsl(from var(--_b2) h s calc(l + 15))); }
+    html:not([data-theme="light"]):not([data-theme="dark"]) #message-input { background: var(--_b1); border-color: var(--_b2); color: var(--_bc); }
+    html:not([data-theme="light"]):not([data-theme="dark"]) #message-input:focus { border-color: color-mix(in oklch, var(--_p) 50%, var(--_b1)); box-shadow: 0 0 0 1px color-mix(in oklch, var(--_p) 20%, transparent); }
+
+    html:not([data-theme="light"]):not([data-theme="dark"]) #settings-dropdown { background: var(--_b2); border-color: color-mix(in oklch, var(--_bc) 20%, transparent); box-shadow: 0 4px 16px rgba(0,0,0,0.2); }
+    html:not([data-theme="light"]):not([data-theme="dark"]) .settings-section-label { color: color-mix(in oklch, var(--_bc) 60%, transparent); }
+    html:not([data-theme="light"]):not([data-theme="dark"]) .settings-divider { border-top-color: color-mix(in oklch, var(--_bc) 15%, transparent); }
+    html:not([data-theme="light"]):not([data-theme="dark"]) .theme-opt { color: var(--_bc); }
+    html:not([data-theme="light"]):not([data-theme="dark"]) .theme-opt:hover { background: var(--_b3); }
+    html:not([data-theme="light"]):not([data-theme="dark"]) .theme-opt.active { color: var(--_p); font-weight: 600; }
   </style>
 </head>
 <body>
@@ -433,12 +622,19 @@
     <button id="clear-history-btn" style="display:none">Clear chat</button>
     <span id="user-label"></span>
     <a id="logout-link" href="logout">Log out</a>
+    <button id="settings-btn" aria-label="Settings" title="Settings">&#9881;</button>
+    <div id="settings-dropdown" role="menu">
+      <div class="settings-section-label">Theme</div>
+      <button class="theme-opt" data-theme-val="auto">Auto</button>
+      <button class="theme-opt" data-theme-val="light">Light</button>
+      <button class="theme-opt" data-theme-val="dark">Dark</button>
+    </div>
   </div>
 </div>
 
 <div id="search-mode-banner">
-  <div>Search-only mode -- results are pulled directly from indexed documentation, not generated by AI</div>
-  <div id="search-mode-login-hint" style="display:none; margin-top:0.5rem"><a href="login" style="color:#1e3a5f">Login</a> for AI-assisted features</div>
+  Search-only mode — results are pulled directly from indexed documentation, not generated by AI
+  <span id="search-mode-login-hint" style="display:none"> — <a href="login">login</a> for AI-assisted features</span>
 </div>
 
 <div id="catalog-bar">

@@ -14,6 +14,59 @@
 (function () {
   "use strict";
 
+  // ------------------------------------------------------------------
+  // Theme picker: Auto / Light / Dark -- persisted in localStorage
+  // ------------------------------------------------------------------
+  (function () {
+    const STORAGE_KEY = "deriva-theme";
+    const html = document.documentElement;
+    const btn = document.getElementById("settings-btn");
+    const dropdown = document.getElementById("settings-dropdown");
+    const opts = dropdown ? dropdown.querySelectorAll(".theme-opt") : [];
+
+    var mq = window.matchMedia("(prefers-color-scheme: dark)");
+
+    function resolveTheme(val) {
+      return val === "auto" ? (mq.matches ? "dark" : "light") : val;
+    }
+
+    function applyTheme(val) {
+      html.setAttribute("data-theme", resolveTheme(val));
+      opts.forEach(function (o) {
+        o.classList.toggle("active", o.dataset.themeVal === val);
+      });
+    }
+
+    applyTheme(localStorage.getItem(STORAGE_KEY) || "auto");
+
+    // Re-apply when OS preference changes (only matters when stored choice is "auto")
+    mq.addEventListener("change", function () {
+      if ((localStorage.getItem(STORAGE_KEY) || "auto") === "auto") {
+        applyTheme("auto");
+      }
+    });
+
+    if (btn && dropdown) {
+      btn.addEventListener("click", function (e) {
+        e.stopPropagation();
+        dropdown.classList.toggle("open");
+      });
+
+      opts.forEach(function (o) {
+        o.addEventListener("click", function () {
+          var val = o.dataset.themeVal;
+          localStorage.setItem(STORAGE_KEY, val);
+          applyTheme(val);
+          dropdown.classList.remove("open");
+        });
+      });
+
+      document.addEventListener("click", function () {
+        dropdown.classList.remove("open");
+      });
+    }
+  }());
+
   // Wrapper around marked.parse that adds target="_blank" to all links.
   // Using a post-render string replace avoids the marked v4/v5 renderer API
   // change (v5+ passes a token object instead of (href, title, text) args).
