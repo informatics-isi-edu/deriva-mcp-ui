@@ -658,8 +658,10 @@ async def _rag_only_response(
         )
         if result_text and not result_text.startswith("Error:"):
             rag_results = json.loads(result_text)
+    except MCPAuthError:
+        raise
     except Exception as exc:
-        logger.warning("RAG-only search failed: %s", exc)
+        logger.warning("RAG-only search failed: %s", exc, exc_info=True)
 
     # Multi-query: extract key terms and run a secondary search to boost
     # specific technical documentation that the broad query may rank low.
@@ -676,6 +678,8 @@ async def _rag_only_response(
             if term_text and not term_text.startswith("Error:"):
                 term_results = json.loads(term_text)
                 rag_results = _merge_rag_results(rag_results, term_results)
+        except MCPAuthError:
+            raise
         except Exception:
             pass  # secondary search is best-effort
 
@@ -695,6 +699,8 @@ async def _rag_only_response(
             if _web_text and not _web_text.startswith("Error:"):
                 _web_results = json.loads(_web_text)
                 rag_results = _merge_rag_results(rag_results, _web_results)
+        except MCPAuthError:
+            raise
         except Exception:
             pass  # best-effort
 

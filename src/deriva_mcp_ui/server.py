@@ -360,7 +360,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                             duration_ms=round((time.monotonic() - t0) * 1000))
             except MCPAuthError:
                 audit_event("chat_error", user_id=session.user_id, error_type="MCPAuthError")
-                yield f"event: error\ndata: {json.dumps({'error': 'auth', 'detail': 'Session expired -- please log in again'})}\n\n"
+                if session.bearer_token is None:
+                    detail = "Login required -- please log in to use this feature"
+                else:
+                    detail = "Session expired -- please log in again"
+                yield f"event: error\ndata: {json.dumps({'error': 'auth', 'detail': detail})}\n\n"
             except Exception as exc:
                 audit_event(
                     "chat_error",

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import time
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
 
 from deriva_mcp_ui.auth import _token_key, require_session, user_session_key
 from deriva_mcp_ui.config import Settings
+from deriva_mcp_ui.mcp_client import MCPAuthError
 from deriva_mcp_ui.server import create_app
 from deriva_mcp_ui.storage.base import Session
 from deriva_mcp_ui.storage.memory import MemorySessionStore
@@ -90,6 +92,67 @@ async def test_chat_message_too_long(app_and_store):
     )
     assert resp.status_code == 400
     assert "maximum length" in resp.json()["detail"]
+
+
+def _sse_error_detail(resp_text: str) -> str:
+    """Extract the 'detail' field from the first SSE error event in a streaming response."""
+    import json as _json
+    for line in resp_text.splitlines():
+        if line.startswith("data:"):
+            try:
+                return _json.loads(line[5:].strip()).get("detail", "")
+            except Exception:
+                pass
+    return ""
+
+
+async def test_chat_mcp_auth_error_authenticated_session(app_and_store):
+    """MCPAuthError during an authenticated chat turn yields 'Session expired' error event."""
+    app, store = app_and_store
+    bearer = "tok-auth-err"
+    now = time.time()
+    session = Session(user_id="alice", bearer_token=bearer, created_at=now, last_active=now)
+    await store.set(user_session_key("alice"), session)
+    await store.set(_token_key(bearer), session)
+    app.dependency_overrides[require_session] = lambda: session
+
+    async def _raise_auth(*args, **kwargs):
+        raise MCPAuthError("401")
+        yield  # make it an async generator
+
+    with patch("deriva_mcp_ui.server.run_chat_turn", new=_raise_auth):
+        client = TestClient(app)
+        resp = client.post("/chat", json={"message": "hi"}, cookies={"deriva_chatbot_session": bearer})
+
+    assert resp.status_code == 200
+    detail = _sse_error_detail(resp.text)
+    assert "expired" in detail.lower()
+    assert "login required" not in detail.lower()
+
+
+async def test_chat_mcp_auth_error_anonymous_session(app_and_store):
+    """MCPAuthError during an anonymous chat turn yields 'Login required' error event."""
+    app, store = app_and_store
+    bearer = "tok-anon-err"
+    now = time.time()
+    # Anonymous session: no bearer_token
+    session = Session(user_id="anon/xyz", bearer_token=None, created_at=now, last_active=now)
+    await store.set(user_session_key("anon/xyz"), session)
+    await store.set(_token_key(bearer), session)
+    app.dependency_overrides[require_session] = lambda: session
+
+    async def _raise_auth(*args, **kwargs):
+        raise MCPAuthError("401")
+        yield  # make it an async generator
+
+    with patch("deriva_mcp_ui.server.run_chat_turn", new=_raise_auth):
+        client = TestClient(app)
+        resp = client.post("/chat", json={"message": "hi"}, cookies={"deriva_chatbot_session": bearer})
+
+    assert resp.status_code == 200
+    detail = _sse_error_detail(resp.text)
+    assert "login required" in detail.lower()
+    assert "expired" not in detail.lower()
 
 
 # ---------------------------------------------------------------------------
