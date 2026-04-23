@@ -1,653 +1,1197 @@
 <!DOCTYPE html>
 <html lang="en" data-theme="light">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>{{HEADER_TITLE}}</title>
-  <!-- Apply stored theme before first paint to avoid flash -->
-  <script>(function(){var t=localStorage.getItem("deriva-theme")||"auto";document.documentElement.setAttribute("data-theme",t==="dark"?"dark":t==="light"?"light":window.matchMedia("(prefers-color-scheme:dark)").matches?"dark":"light");}());</script>
-  <!-- DaisyUI theme CSS variables only (no component styles) -->
-  <link href="https://cdn.jsdelivr.net/npm/daisyui@4/dist/themes.min.css" rel="stylesheet" type="text/css">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600&display=swap" rel="stylesheet">
-  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
-  <style>
-    /* No --p overrides needed: our light/dark themes use hardcoded hex; other DaisyUI themes use their own oklch --p */
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{HEADER_TITLE}}</title>
+    <!-- Apply stored theme before first paint to avoid flash -->
+    <script>(function () {
+        var t = localStorage.getItem("deriva-theme") || "auto";
+        document.documentElement.setAttribute("data-theme",
+            t === "dark" ? "dark" : t === "light" ? "light" : window.matchMedia(
+                "(prefers-color-scheme:dark)").matches ? "dark" : "light");
+    }());</script>
+    <!-- DaisyUI theme CSS variables only (no component styles) -->
+    <link href="https://cdn.jsdelivr.net/npm/daisyui@4/dist/themes.min.css" rel="stylesheet" type="text/css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <style>
+        /* No --p overrides needed: our light/dark themes use hardcoded hex; other DaisyUI themes use their own oklch --p */
 
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        *, *::before, *::after {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
 
-    body {
-      font-family: 'Montserrat', system-ui, -apple-system, sans-serif;
-      font-size: 15px;
-      background: {{CHAT_BG_COLOR}};
-      color: #1a1a1a;
-      height: 100dvh;
-      display: flex;
-      flex-direction: column;
-    }
+        body {
+            font-family: 'Montserrat', system-ui, -apple-system, sans-serif;
+            font-size: 15px;
+            background: {{CHAT_BG_COLOR}};
+            color: #1a1a1a;
+            height: 100dvh;
+            display: flex;
+            flex-direction: column;
+        }
 
-    /* ---- Header ---- */
-    #header {
-      background: {{HEADER_BG_COLOR}};
-      background: linear-gradient(to right, {{HEADER_BG_COLOR}}, hsl(from {{HEADER_BG_COLOR}} h s calc(l + 15)));
-      color: #fff;
-      padding: 0.75rem 1.25rem;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      flex-shrink: 0;
-    }
-    #header-left {
-      display: flex;
-      align-items: center;
-      gap: 0.75rem;
-    }
-    #header-logo {
-      height: 2rem;
-      width: auto;
-      max-width: 8rem;
-      object-fit: contain;
-    }
-    #header-logo[src=""] { display: none; }
-    #header h1 { font-size: 1rem; font-weight: 600; letter-spacing: 0.02em; line-height: 1; margin-top: -2px; }
-    #header h1 a { text-decoration: none; }
-    #header h1 a:hover { text-decoration: underline; }
-    #header-right { display: flex; align-items: center; gap: 1rem; font-size: 0.85rem; opacity: 0.85; position: relative; }
-    #user-label { max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: default; }
-    #clear-history-btn {
-      background: none;
-      border: 1px solid rgba(168, 196, 232, 0.4);
-      color: #a8c4e8;
-      border-radius: 4px;
-      padding: 0 0.5rem;
-      font-size: 0.8rem;
-      height: 1.6rem;
-      cursor: pointer;
-    }
-    #clear-history-btn:hover { background: rgba(255, 255, 255, 0.1); }
-    #rag-toggle-btn {
-      background: none;
-      border: 1px solid rgba(168, 196, 232, 0.4);
-      color: #a8c4e8;
-      border-radius: 4px;
-      padding: 0.2rem 0.5rem;
-      font-size: 0.8rem;
-      cursor: pointer;
-      display: none;
-    }
-    #rag-toggle-btn:hover { background: rgba(255, 255, 255, 0.1); }
-    #rag-toggle-btn.rag-active {
-      background: rgba(255, 200, 80, 0.18);
-      border-color: #f0c040;
-      color: #f0c040;
-    }
-    #rag-toggle-btn.rag-active:hover { background: rgba(255, 200, 80, 0.28); }
-    #logout-link { color: #a8c4e8; text-decoration: none; }
-    #logout-link:hover { text-decoration: underline; }
+        /* ---- Header ---- */
+        #header {
+            background: {{HEADER_BG_COLOR}};
+            color: #fff;
+            text-shadow: 0 1px 2px rgba(0,0,0,0.35);
+            padding: 0.75rem 1.25rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-shrink: 0;
+        }
 
-    /* ---- Search-mode banner ---- */
-    #search-mode-banner {
-      background: #eef6ff;
-      border-bottom: 1px solid #b8d0ed;
-      color: #1e3a5f;
-      font-size: 0.82rem;
-      padding: 0.35rem 1.25rem;
-      text-align: center;
-      display: none;
-      flex-shrink: 0;
-    }
+        @supports (background: hsl(from red h s l)) {
+            #header {
+                background: linear-gradient(to bottom right, {{HEADER_BG_COLOR}},
+                    hsl(from {{HEADER_BG_COLOR}} h s calc(l + 20)));
+            }
+        }
 
-    /* ---- Catalog context bar (general-purpose mode) ---- */
-    #catalog-bar {
-      background: #fff;
-      border-bottom: 1px solid #ddd;
-      padding: 0.5rem 1.25rem;
-      display: none;
-      gap: 0.75rem;
-      align-items: center;
-      flex-shrink: 0;
-      flex-wrap: wrap;
-    }
-    #catalog-bar label { font-size: 0.85rem; color: #555; }
-    #catalog-bar input {
-      font-size: 0.85rem;
-      border: 1px solid #ccc;
-      border-radius: 4px;
-      padding: 0.3rem 0.5rem;
-      width: 200px;
-    }
+        #header-left {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
 
-    /* ---- Message thread ---- */
-    #thread-scroller {
-      flex: 1;
-      overflow-y: auto;
-    }
-    #thread {
-      max-width: 65rem;
-      width: 100%;
-      margin: 0 auto;
-      padding: 1.25rem;
-      display: flex;
-      flex-direction: column;
-      gap: 1rem;
-    }
+        #header-logo {
+            height: 2rem;
+            width: auto;
+            max-width: 8rem;
+            object-fit: contain;
+        }
 
-    .msg {
-      max-width: 90%;
-      padding: 0.65rem 0.9rem;
-      border-radius: 8px;
-      line-height: 1.6;
-      word-break: break-word;
-      align-self: flex-start;
-    }
-    .msg-user {
-      background: #b8d0ed;
-      color: #1a1a1a;
-      border: 1px solid #8fb3d9;
-      align-self: flex-end;
-      max-width: 70%;
-      margin-right: 10%;
-      border-top-left-radius: 8px;
-      border-top-right-radius: 3px;
-    }
-    body.chat-align-left .msg-user {
-      align-self: flex-start;
-      margin-right: 0;
-      margin-left: 10%;
-      border-top-left-radius: 3px;
-      border-top-right-radius: 8px;
-    }
-    .msg-assistant {
-      background: #e8ecf0;
-      border: 1px solid #d0d7de;
-      border-top-left-radius: 3px;
-    }
-    .msg-assistant pre {
-      background: #d4d8dc;
-      border-radius: 5px;
-      padding: 0.6rem 0.8rem;
-      overflow-x: auto;
-      font-size: 0.85em;
-      margin: 0.5rem 0;
-    }
-    .msg-assistant .pre-wrapper {
-      position: relative;
-    }
-    .msg-assistant .pre-wrapper .copy-btn {
-      position: absolute;
-      top: 0.3rem;
-      right: 0.3rem;
-      padding: 0.15rem 0.45rem;
-      font-size: 0.75em;
-      background: #d0d7de;
-      border: none;
-      border-radius: 3px;
-      cursor: pointer;
-      opacity: 0;
-      transition: opacity 0.15s;
-    }
-    .msg-assistant .pre-wrapper:hover .copy-btn { opacity: 1; }
-    .msg-assistant .pre-wrapper .copy-btn.copied {
-      background: #4caf50;
-      color: #fff;
-    }
-    .msg-assistant code { font-family: ui-monospace, monospace; font-size: 0.88em; }
-    /* During streaming suppress default blue link style until renderFinal transforms them */
-    .msg-assistant a { color: inherit; text-decoration: none; border-bottom: 1px dotted #999; }
-    .msg-assistant img { max-width: 70%; height: auto; display: block; margin: 0.5rem 0; }
-    /* Inline reference bubble -- wrapping <a> makes the whole bubble clickable */
-    .ref-num {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      background: #6b8aaa;
-      color: #fff;
-      font-size: 0.6em;
-      font-weight: 600;
-      border-radius: 3px;
-      padding: 0.1em 0.35em;
-      margin-left: 0.5em;
-      margin-right: 0.25em;
-      vertical-align: super;
-      line-height: 1;
-      text-decoration: none;
-      cursor: pointer;
-    }
-    a.ref-bubble { text-decoration: none; }
-    a.ref-bubble:hover .ref-num { background: #4a6a8a; }
-    /* Collapsible reference list -- collapsed by default */
-    .ref-section {
-      font-size: 0.8em;
-      color: #666;
-      margin-top: 0.3rem;
-      margin-bottom: 0.25rem;
-    }
-    .ref-section summary {
-      cursor: pointer;
-      user-select: none;
-      color: #888;
-      list-style: none;
-      display: inline-flex;
-      align-items: center;
-      gap: 0.3em;
-    }
-    .ref-section summary::-webkit-details-marker { display: none; }
-    .ref-section summary::before {
-      content: "\25B6";
-      font-size: 0.6em;
-      color: #aaa;
-      transition: transform 0.12s;
-    }
-    .ref-section[open] > summary::before { transform: rotate(90deg); }
-    .ref-section summary:hover { color: #555; }
-    .ref-section .ref-list {
-      display: flex;
-      flex-direction: column;
-      gap: 0.15rem;
-      padding-top: 0.3rem;
-    }
-    .ref-section .ref-list a { color: #1e3a5f; word-break: break-all; }
-    .ref-section .ref-list a:hover { text-decoration: underline; }
-    .msg-assistant p { margin: 0.4rem 0; }
-    .msg-assistant p:first-child { margin-top: 0; }
-    .msg-assistant p:last-child { margin-bottom: 0; }
-    .msg-assistant ul, .msg-assistant ol { padding-left: 1.4rem; margin: 0.4rem 0; }
-    .msg-assistant table { border-collapse: collapse; font-size: 0.88em; margin: 0.5rem 0; }
+        #header-logo[src=""] {
+            display: none;
+        }
 
-    .msg-assistant th, .msg-assistant td { border: 1px solid #ccc; padding: 0.3rem 0.6rem; }
-    .msg-assistant th { background: #f0f0f0; }
-    /* RAG source headings -- h4 used for per-source section labels */
-    .msg-assistant h4 {
-      font-size: 1.05em;
-      font-weight: normal;
-      font-style: italic;
-      color: #444;
-      margin: 0.9rem 0 0.2rem 0;
-      padding: 0;
-      border: none;
-    }
-    .msg-assistant h4:first-child { margin-top: 0; }
-    /* Consecutive h4 headings (framing + count + source label) group tightly */
-    .msg-assistant h4 + h4 { margin-top: 0.15rem; }
-    /* RAG footer (show-more note) separator */
-    .msg-assistant hr {
-      border: none;
-      border-top: 1px solid #c8cfd8;
-      margin: 0.8rem 0 0.4rem 0;
-    }
+        #header h1 {
+            font-size: 1rem;
+            font-weight: 600;
+            letter-spacing: 0.02em;
+            line-height: 1;
+        }
 
-    /* ---- Status indicator (shown during first-turn priming) ---- */
-    .msg-status {
-      font-size: 0.82rem;
-      color: #888;
-      font-style: italic;
-      padding: 0.2rem 0;
-    }
+        #header h1 a {
+            text-decoration: none;
+        }
 
-    /* ---- Thinking indicator (persists until stream done) ---- */
-    .msg-thinking { padding-top: 0.3rem; }
-    .msg-thinking:empty { display: none; }
+        #header h1 a:hover {
+            text-decoration: underline;
+        }
 
-    /* ---- Tool call blocks ---- */
-    .msg-tools-container {
-      margin-bottom: 0.5rem;
-    }
-    .msg-tools-container-summary {
-      font-size: 0.8em;
-      color: #556;
-      cursor: pointer;
-      user-select: none;
-      list-style: none;
-      display: flex;
-      align-items: center;
-      gap: 0.4rem;
-      padding: 0.2rem 0;
-    }
-    .msg-tools-container-summary::-webkit-details-marker { display: none; }
-    .msg-tools-container-summary::before {
-      content: "\25B6";
-      font-size: 0.6em;
-      color: #8899bb;
-      transition: transform 0.12s;
-    }
-    .msg-tools-container[open] > .msg-tools-container-summary::before { transform: rotate(90deg); }
-    .msg-tools { margin-top: 0.3rem; }
-    .tool-call {
-      border: 1px solid #d0d8ee;
-      border-radius: 5px;
-      margin-bottom: 0.3rem;
-      font-size: 0.82em;
-      background: #f6f8ff;
-    }
-    .tool-call-summary {
-      padding: 0.32rem 0.6rem;
-      cursor: pointer;
-      list-style: none;
-      display: flex;
-      align-items: center;
-      gap: 0.45rem;
-      user-select: none;
-    }
-    .tool-call-summary::-webkit-details-marker { display: none; }
-    .tool-call-summary::before {
-      content: "\25B6";
-      font-size: 0.6em;
-      color: #8899bb;
-      transition: transform 0.12s;
-      flex-shrink: 0;
-    }
-    .tool-call[open] > .tool-call-summary::before { transform: rotate(90deg); }
-    .tool-call-summary code {
-      font-family: ui-monospace, monospace;
-      color: #1e3a5f;
-      font-weight: 600;
-    }
-    .tool-call-status { color: #999; font-size: 0.82em; margin-left: auto; }
-    .tool-call-section {
-      padding: 0.35rem 0.6rem;
-      border-top: 1px solid #d0d8ee;
-    }
-    .tool-call-label {
-      font-size: 0.75em;
-      color: #777;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      margin-bottom: 0.2rem;
-    }
-    .tool-call-section pre {
-      font-family: ui-monospace, monospace;
-      font-size: 0.84em;
-      background: #eef0f8;
-      padding: 0.35rem 0.55rem;
-      border-radius: 4px;
-      overflow-x: auto;
-      white-space: pre-wrap;
-      word-break: break-all;
-      max-height: 180px;
-      overflow-y: auto;
-      margin: 0;
-    }
+        #header button { text-shadow: inherit; }
 
-    .msg-error {
-      align-self: center;
-      background: #fff3cd;
-      border: 1px solid #ffc107;
-      color: #664d03;
-      font-size: 0.85rem;
-      border-radius: 6px;
-      padding: 0.5rem 0.9rem;
-    }
+        #header-right {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            font-size: 0.85rem;
+            opacity: 0.85;
+            position: relative;
+        }
 
-    /* Loading dots */
-    .loading-dots span {
-      display: inline-block;
-      width: 6px; height: 6px;
-      background: #aaa;
-      border-radius: 50%;
-      margin: 0 2px;
-      animation: blink 1.2s infinite;
-    }
-    .loading-dots span:nth-child(2) { animation-delay: 0.2s; }
-    .loading-dots span:nth-child(3) { animation-delay: 0.4s; }
-    @keyframes blink { 0%,80%,100% { opacity: 0.2; } 40% { opacity: 1; } }
+        #user-label {
+            max-width: 200px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            cursor: default;
+        }
 
-    /* ---- Input area ---- */
-    #input-area {
-      background: {{INPUT_AREA_BG_COLOR}};
-      background: linear-gradient(to right, {{INPUT_AREA_BG_COLOR}}, hsl(from {{INPUT_AREA_BG_COLOR}} h s calc(l + 15)));
-      padding: 0.75rem 1.25rem;
-      flex-shrink: 0;
-    }
-    #input-inner {
-      max-width: 60rem;
-      width: 100%;
-      margin: 0 auto;
-    }
-    #message-input {
-      width: 100%;
-      resize: none;
-      font-size: 0.95rem;
-      font-family: inherit;
-      border: 1.5px solid {{INPUT_AREA_BG_COLOR}};
-      border-radius: 1rem;
-      padding: 0.55rem 0.8rem;
-      line-height: 1.5;
-      overflow: hidden;
-      outline: none;
-      transition: border-color 0.15s;
-    }
-    #message-input:focus { border-color: {{INPUT_AREA_BG_COLOR}}; box-shadow: 0 0 0 1px rgba(30, 58, 95, 0.2); }
+        #clear-history-btn {
+            background: none;
+            border: 1px solid rgba(168, 196, 232, 0.4);
+            color: #a8c4e8;
+            border-radius: 4px;
+            padding: 0 0.5rem;
+            font-size: 0.8rem;
+            height: 1.6rem;
+            cursor: pointer;
+        }
 
-    /* ---- No-cards mode: flat assistant messages (enabled when show_response_cards=false) ---- */
-    body.no-response-cards .msg-assistant {
-      background: transparent;
-      border: none;
-      border-radius: 0;
-      padding: 0.3rem 0;
-    }
+        #clear-history-btn:hover {
+            background: rgba(255, 255, 255, 0.1);
+        }
 
-    /* ---- Settings button + dropdown ---- */
-    #settings-btn {
-      background: none;
-      border: 1px solid rgba(168, 196, 232, 0.4);
-      color: #a8c4e8;
-      border-radius: 4px;
-      padding: 0 0.45rem;
-      font-size: 1rem;
-      height: 1.6rem;
-      line-height: 1;
-      cursor: pointer;
-    }
-    #settings-btn:hover { background: rgba(255, 255, 255, 0.1); }
-    #settings-dropdown {
-      display: none;
-      position: absolute;
-      top: calc(100% + 8px);
-      right: 0;
-      background: #fff;
-      border: 1px solid #ccd;
-      border-radius: 6px;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-      min-width: 140px;
-      max-height: 22rem;
-      overflow-y: auto;
-      z-index: 100;
-      padding: 0.4rem 0;
-    }
-    #settings-dropdown.open { display: block; }
-    .settings-section-label {
-      font-size: 0.72rem;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-      color: #999;
-      padding: 0.3rem 0.85rem 0.15rem;
-    }
-    .settings-divider {
-      border: none;
-      border-top: 1px solid #eee;
-      margin: 0.3rem 0;
-    }
-    .theme-opt {
-      display: block;
-      width: 100%;
-      text-align: left;
-      padding: 0.35rem 1.1rem;
-      font-size: 0.82rem;
-      background: none;
-      border: none;
-      cursor: pointer;
-      color: #333;
-    }
-    .theme-opt:hover { background: #eef3fa; }
-    .theme-opt.active { font-weight: 600; color: #1e3a5f; }
+        #rag-toggle-btn {
+            background: none;
+            border: 1px solid rgba(168, 196, 232, 0.4);
+            color: #a8c4e8;
+            border-radius: 4px;
+            padding: 0.2rem 0.5rem;
+            font-size: 0.8rem;
+            cursor: pointer;
+            display: none;
+        }
 
-    /* ---- Our dark theme: calibrated overrides ---- */
-    [data-theme="dark"] body { color: #e0e0e0; background: #111827; }
+        #rag-toggle-btn:hover {
+            background: rgba(255, 255, 255, 0.1);
+        }
 
-    [data-theme="dark"] #search-mode-banner { background: #1a2d45; border-bottom-color: #2a4a70; color: #90b8e0; }
-    [data-theme="dark"] #search-mode-banner a { color: #90b8e0; }
+        #rag-toggle-btn.rag-active {
+            background: rgba(255, 200, 80, 0.18);
+            border-color: #f0c040;
+            color: #f0c040;
+        }
 
-    [data-theme="dark"] #catalog-bar { background: #1e2433; border-bottom-color: #2d3748; }
-    [data-theme="dark"] #catalog-bar label { color: #aaa; }
-    [data-theme="dark"] #catalog-bar input { background: #252d3d; border-color: #444; color: #e0e0e0; }
+        #rag-toggle-btn.rag-active:hover {
+            background: rgba(255, 200, 80, 0.28);
+        }
 
-    [data-theme="dark"] .msg-user { background: #1f3d6e; color: #e0e8f0; border-color: #2a5080; }
+        #logout-link {
+            color: #a8c4e8;
+            text-decoration: none;
+        }
 
-    [data-theme="dark"] .msg-assistant { background: #1e2533; border-color: #2d3748; }
-    [data-theme="dark"] .msg-assistant pre { background: #161d2d; }
-    [data-theme="dark"] .msg-assistant .pre-wrapper .copy-btn { background: #2a3448; color: #ccc; }
-    [data-theme="dark"] .msg-assistant .pre-wrapper .copy-btn.copied { background: #2d6e31; color: #fff; }
-    [data-theme="dark"] .msg-assistant a { border-bottom-color: #555; }
-    [data-theme="dark"] .msg-assistant th, [data-theme="dark"] .msg-assistant td { border-color: #3d4a5d; }
-    [data-theme="dark"] .msg-assistant th { background: #252d3d; }
-    [data-theme="dark"] .msg-assistant h4 { color: #bbb; }
-    [data-theme="dark"] .msg-assistant hr { border-top-color: #2d3748; }
+        #logout-link:hover {
+            text-decoration: underline;
+        }
 
-    [data-theme="dark"] .ref-num { background: #3a5a7a; }
-    [data-theme="dark"] a.ref-bubble:hover .ref-num { background: #2a4a6a; }
-    [data-theme="dark"] .ref-section { color: #999; }
-    [data-theme="dark"] .ref-section summary { color: #777; }
-    [data-theme="dark"] .ref-section summary::before { color: #666; }
-    [data-theme="dark"] .ref-section summary:hover { color: #aaa; }
-    [data-theme="dark"] .ref-section .ref-list a { color: #90b8e0; }
+        /* ---- Search-mode banner ---- */
+        #search-mode-banner {
+            background: #eef6ff;
+            border-bottom: 1px solid #b8d0ed;
+            color: #1e3a5f;
+            font-size: 0.82rem;
+            padding: 0.35rem 1.25rem;
+            text-align: center;
+            display: none;
+            flex-shrink: 0;
+        }
 
-    [data-theme="dark"] .msg-tools-container-summary { color: #99aabb; }
-    [data-theme="dark"] .tool-call { border-color: #2d3a5d; background: #1a2235; }
-    [data-theme="dark"] .tool-call-summary code { color: #90b8e0; }
-    [data-theme="dark"] .tool-call-section { border-top-color: #2d3a5d; }
-    [data-theme="dark"] .tool-call-label { color: #999; }
-    [data-theme="dark"] .tool-call-section pre { background: #131a2a; }
+        /* ---- Catalog context bar (general-purpose mode) ---- */
+        #catalog-bar {
+            background: #fff;
+            border-bottom: 1px solid #ddd;
+            padding: 0.5rem 1.25rem;
+            display: none;
+            gap: 0.75rem;
+            align-items: center;
+            flex-shrink: 0;
+            flex-wrap: wrap;
+        }
 
-    [data-theme="dark"] .msg-error { background: #332200; border-color: #885500; color: #ffcc77; }
-    [data-theme="dark"] .loading-dots span { background: #555; }
+        #catalog-bar label {
+            font-size: 0.85rem;
+            color: #555;
+        }
 
-    [data-theme="dark"] #input-area { background: #1a2233; background: linear-gradient(to right, #1a2233, hsl(from #1a2233 h s calc(l + 15))); }
-    [data-theme="dark"] #message-input { background: #252d3d; color: #e0e0e0; border-color: #3a4a60; }
-    [data-theme="dark"] #message-input:focus { border-color: #4a6a9a; box-shadow: 0 0 0 1px rgba(74, 106, 154, 0.4); }
-    [data-theme="dark"] #message-input::placeholder { color: #666; }
+        #catalog-bar input {
+            font-size: 0.85rem;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            padding: 0.3rem 0.5rem;
+            width: 200px;
+        }
 
-    [data-theme="dark"] #settings-dropdown { background: #1e2533; border-color: #2d3748; }
-    [data-theme="dark"] .settings-section-label { color: #666; }
-    [data-theme="dark"] .settings-divider { border-top-color: #2d3748; }
-    [data-theme="dark"] .theme-opt { color: #e0e0e0; }
-    [data-theme="dark"] .theme-opt:hover { background: #252d3d; }
-    [data-theme="dark"] .theme-opt.active { color: #90b8e0; }
+        /* ---- Message thread ---- */
+        #thread-scroller {
+            flex: 1;
+            overflow-y: auto;
+        }
 
-    /* ---- DaisyUI theme pass-through: all themes except our light/dark ----
-       DaisyUI v4 vars are bare oklch channels (e.g. --b1: 100% 0 0), not full color values.
-       Wrap each with oklch() once here; downstream rules use --_b1 etc. as valid colors. ---- */
-    html:not([data-theme="light"]):not([data-theme="dark"]) {
-      --_b1: oklch(var(--b1));
-      --_b2: oklch(var(--b2));
-      --_b3: oklch(var(--b3));
-      --_bc: oklch(var(--bc));
-      --_p:  oklch(var(--p));
-      --_pc: oklch(var(--pc));
-    }
+        #thread {
+            max-width: 65rem;
+            width: 100%;
+            margin: 0 auto;
+            padding: 1.25rem;
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+        }
 
-    html:not([data-theme="light"]):not([data-theme="dark"]) body { background: var(--_b1); color: var(--_bc); }
+        .msg {
+            max-width: 90%;
+            padding: 0.65rem 0.9rem;
+            border-radius: 8px;
+            line-height: 1.6;
+            word-break: break-word;
+            align-self: flex-start;
+        }
 
-    html:not([data-theme="light"]):not([data-theme="dark"]) #header { background: var(--_p); background: linear-gradient(to right, var(--_p), hsl(from var(--_p) h s calc(l + 15))); color: var(--_pc); }
-    html:not([data-theme="light"]):not([data-theme="dark"]) #clear-history-btn,
-    html:not([data-theme="light"]):not([data-theme="dark"]) #rag-toggle-btn,
-    html:not([data-theme="light"]):not([data-theme="dark"]) #settings-btn { color: color-mix(in oklch, var(--_pc) 80%, transparent); border-color: color-mix(in oklch, var(--_pc) 30%, transparent); }
-    html:not([data-theme="light"]):not([data-theme="dark"]) #clear-history-btn:hover,
-    html:not([data-theme="light"]):not([data-theme="dark"]) #rag-toggle-btn:hover,
-    html:not([data-theme="light"]):not([data-theme="dark"]) #settings-btn:hover { background: color-mix(in oklch, var(--_pc) 10%, transparent); }
-    html:not([data-theme="light"]):not([data-theme="dark"]) #logout-link { color: color-mix(in oklch, var(--_pc) 80%, transparent); }
+        .msg-user {
+            background: #b8d0ed;
+            color: #1a1a1a;
+            border: 1px solid #8fb3d9;
+            align-self: flex-end;
+            max-width: 70%;
+            margin-right: 10%;
+            border-top-left-radius: 8px;
+            border-top-right-radius: 3px;
+        }
 
-    html:not([data-theme="light"]):not([data-theme="dark"]) #search-mode-banner { background: var(--_b2); border-bottom-color: var(--_b3); color: var(--_p); }
-    html:not([data-theme="light"]):not([data-theme="dark"]) #search-mode-banner a { color: var(--_p); }
+        body.chat-align-left .msg-user {
+            align-self: flex-start;
+            margin-right: 0;
+            margin-left: 10%;
+            border-top-left-radius: 3px;
+            border-top-right-radius: 8px;
+        }
 
-    html:not([data-theme="light"]):not([data-theme="dark"]) #catalog-bar { background: var(--_b1); border-bottom-color: var(--_b3); }
-    html:not([data-theme="light"]):not([data-theme="dark"]) #catalog-bar label { color: color-mix(in oklch, var(--_bc) 65%, transparent); }
-    html:not([data-theme="light"]):not([data-theme="dark"]) #catalog-bar input { background: var(--_b1); border-color: var(--_b3); color: var(--_bc); }
+        .msg-assistant {
+            background: #e8ecf0;
+            border: 1px solid #d0d7de;
+            border-top-left-radius: 3px;
+        }
 
-    html:not([data-theme="light"]):not([data-theme="dark"]) .msg-user { background: color-mix(in oklch, var(--_p) 25%, var(--_b1)); color: var(--_bc); border-color: color-mix(in oklch, var(--_p) 50%, var(--_b1)); }
-    html:not([data-theme="light"]):not([data-theme="dark"]) .msg-assistant { background: var(--_b2); border-color: var(--_b3); }
-    html:not([data-theme="light"]):not([data-theme="dark"]) .msg-assistant pre { background: var(--_b3); }
-    html:not([data-theme="light"]):not([data-theme="dark"]) .msg-assistant .pre-wrapper .copy-btn { background: var(--_b3); color: var(--_bc); }
-    html:not([data-theme="light"]):not([data-theme="dark"]) .msg-assistant a { border-bottom-color: color-mix(in oklch, var(--_bc) 30%, transparent); }
-    html:not([data-theme="light"]):not([data-theme="dark"]) .msg-assistant th,
-    html:not([data-theme="light"]):not([data-theme="dark"]) .msg-assistant td { border-color: var(--_b3); }
-    html:not([data-theme="light"]):not([data-theme="dark"]) .msg-assistant th { background: var(--_b2); }
-    html:not([data-theme="light"]):not([data-theme="dark"]) .msg-assistant h4 { color: color-mix(in oklch, var(--_bc) 65%, transparent); }
-    html:not([data-theme="light"]):not([data-theme="dark"]) .msg-assistant hr { border-top-color: var(--_b3); }
+        .msg-assistant pre {
+            background: #d4d8dc;
+            border-radius: 5px;
+            padding: 0.6rem 0.8rem;
+            overflow-x: auto;
+            font-size: 0.85em;
+            margin: 0.5rem 0;
+        }
 
-    html:not([data-theme="light"]):not([data-theme="dark"]) .ref-num { background: color-mix(in oklch, var(--_p) 70%, transparent); }
-    html:not([data-theme="light"]):not([data-theme="dark"]) a.ref-bubble:hover .ref-num { background: color-mix(in oklch, var(--_p) 90%, transparent); }
-    html:not([data-theme="light"]):not([data-theme="dark"]) .ref-section { color: color-mix(in oklch, var(--_bc) 55%, transparent); }
-    html:not([data-theme="light"]):not([data-theme="dark"]) .ref-section summary { color: color-mix(in oklch, var(--_bc) 45%, transparent); }
-    html:not([data-theme="light"]):not([data-theme="dark"]) .ref-section summary::before { color: color-mix(in oklch, var(--_bc) 30%, transparent); }
-    html:not([data-theme="light"]):not([data-theme="dark"]) .ref-section summary:hover { color: color-mix(in oklch, var(--_bc) 65%, transparent); }
-    html:not([data-theme="light"]):not([data-theme="dark"]) .ref-section .ref-list a { color: var(--_p); }
+        .msg-assistant .pre-wrapper {
+            position: relative;
+        }
 
-    html:not([data-theme="light"]):not([data-theme="dark"]) .msg-status { color: color-mix(in oklch, var(--_bc) 50%, transparent); }
-    html:not([data-theme="light"]):not([data-theme="dark"]) .msg-tools-container-summary { color: color-mix(in oklch, var(--_bc) 55%, transparent); }
-    html:not([data-theme="light"]):not([data-theme="dark"]) .msg-tools-container-summary::before { color: color-mix(in oklch, var(--_p) 60%, transparent); }
-    html:not([data-theme="light"]):not([data-theme="dark"]) .tool-call { border-color: var(--_b3); background: var(--_b2); }
-    html:not([data-theme="light"]):not([data-theme="dark"]) .tool-call-summary::before { color: color-mix(in oklch, var(--_p) 60%, transparent); }
-    html:not([data-theme="light"]):not([data-theme="dark"]) .tool-call-summary code { color: var(--_p); }
-    html:not([data-theme="light"]):not([data-theme="dark"]) .tool-call-status { color: color-mix(in oklch, var(--_bc) 45%, transparent); }
-    html:not([data-theme="light"]):not([data-theme="dark"]) .tool-call-section { border-top-color: var(--_b3); }
-    html:not([data-theme="light"]):not([data-theme="dark"]) .tool-call-label { color: color-mix(in oklch, var(--_bc) 50%, transparent); }
-    html:not([data-theme="light"]):not([data-theme="dark"]) .tool-call-section pre { background: var(--_b1); }
-    html:not([data-theme="light"]):not([data-theme="dark"]) .loading-dots span { background: color-mix(in oklch, var(--_bc) 35%, transparent); }
+        .msg-assistant .pre-wrapper .copy-btn {
+            position: absolute;
+            top: 0.3rem;
+            right: 0.3rem;
+            padding: 0.15rem 0.45rem;
+            font-size: 0.75em;
+            background: #d0d7de;
+            border: none;
+            border-radius: 3px;
+            cursor: pointer;
+            opacity: 0;
+            transition: opacity 0.15s;
+        }
 
-    html:not([data-theme="light"]):not([data-theme="dark"]) #input-area { background: var(--_b2); background: linear-gradient(to right, var(--_b2), hsl(from var(--_b2) h s calc(l + 15))); }
-    html:not([data-theme="light"]):not([data-theme="dark"]) #message-input { background: var(--_b1); border-color: var(--_b2); color: var(--_bc); }
-    html:not([data-theme="light"]):not([data-theme="dark"]) #message-input:focus { border-color: color-mix(in oklch, var(--_p) 50%, var(--_b1)); box-shadow: 0 0 0 1px color-mix(in oklch, var(--_p) 20%, transparent); }
+        .msg-assistant .pre-wrapper:hover .copy-btn {
+            opacity: 1;
+        }
 
-    html:not([data-theme="light"]):not([data-theme="dark"]) #settings-dropdown { background: var(--_b2); border-color: color-mix(in oklch, var(--_bc) 20%, transparent); box-shadow: 0 4px 16px rgba(0,0,0,0.2); }
-    html:not([data-theme="light"]):not([data-theme="dark"]) .settings-section-label { color: color-mix(in oklch, var(--_bc) 60%, transparent); }
-    html:not([data-theme="light"]):not([data-theme="dark"]) .settings-divider { border-top-color: color-mix(in oklch, var(--_bc) 15%, transparent); }
-    html:not([data-theme="light"]):not([data-theme="dark"]) .theme-opt { color: var(--_bc); }
-    html:not([data-theme="light"]):not([data-theme="dark"]) .theme-opt:hover { background: var(--_b3); }
-    html:not([data-theme="light"]):not([data-theme="dark"]) .theme-opt.active { color: var(--_p); font-weight: 600; }
-  </style>
+        .msg-assistant .pre-wrapper .copy-btn.copied {
+            background: #4caf50;
+            color: #fff;
+        }
+
+        .msg-assistant code {
+            font-family: ui-monospace, monospace;
+            font-size: 0.88em;
+        }
+
+        /* During streaming suppress default blue link style until renderFinal transforms them */
+        .msg-assistant a {
+            color: inherit;
+            text-decoration: none;
+            border-bottom: 1px dotted #999;
+        }
+
+        .msg-assistant img {
+            max-width: 70%;
+            height: auto;
+            display: block;
+            margin: 0.5rem 0;
+        }
+
+        /* Inline reference bubble -- wrapping <a> makes the whole bubble clickable */
+        .ref-num {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            background: #6b8aaa;
+            color: #fff;
+            font-size: 0.6em;
+            font-weight: 600;
+            border-radius: 3px;
+            padding: 0.1em 0.35em;
+            margin-left: 0.5em;
+            margin-right: 0.25em;
+            vertical-align: super;
+            line-height: 1;
+            text-decoration: none;
+            cursor: pointer;
+        }
+
+        a.ref-bubble {
+            text-decoration: none;
+        }
+
+        a.ref-bubble:hover .ref-num {
+            background: #4a6a8a;
+        }
+
+        /* Collapsible reference list -- collapsed by default */
+        .ref-section {
+            font-size: 0.8em;
+            color: #666;
+            margin-top: 0.3rem;
+            margin-bottom: 0.25rem;
+        }
+
+        .ref-section summary {
+            cursor: pointer;
+            user-select: none;
+            color: #888;
+            list-style: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.3em;
+        }
+
+        .ref-section summary::-webkit-details-marker {
+            display: none;
+        }
+
+        .ref-section summary::before {
+            content: "\25B6";
+            font-size: 0.6em;
+            color: #aaa;
+            transition: transform 0.12s;
+        }
+
+        .ref-section[open] > summary::before {
+            transform: rotate(90deg);
+        }
+
+        .ref-section summary:hover {
+            color: #555;
+        }
+
+        .ref-section .ref-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.15rem;
+            padding-top: 0.3rem;
+        }
+
+        .ref-section .ref-list a {
+            color: #1e3a5f;
+            word-break: break-all;
+        }
+
+        .ref-section .ref-list a:hover {
+            text-decoration: underline;
+        }
+
+        .msg-assistant p {
+            margin: 0.4rem 0;
+        }
+
+        .msg-assistant p:first-child {
+            margin-top: 0;
+        }
+
+        .msg-assistant p:last-child {
+            margin-bottom: 0;
+        }
+
+        .msg-assistant ul, .msg-assistant ol {
+            padding-left: 1.4rem;
+            margin: 0.4rem 0;
+        }
+
+        .msg-assistant table {
+            border-collapse: collapse;
+            font-size: 0.88em;
+            margin: 0.5rem 0;
+        }
+
+        .msg-assistant th, .msg-assistant td {
+            border: 1px solid #ccc;
+            padding: 0.3rem 0.6rem;
+        }
+
+        .msg-assistant th {
+            background: #f0f0f0;
+        }
+
+        /* RAG source headings -- h4 used for per-source section labels */
+        .msg-assistant h4 {
+            font-size: 1.05em;
+            font-weight: normal;
+            font-style: italic;
+            color: #444;
+            margin: 0.9rem 0 0.2rem 0;
+            padding: 0;
+            border: none;
+        }
+
+        .msg-assistant h4:first-child {
+            margin-top: 0;
+        }
+
+        /* Consecutive h4 headings (framing + count + source label) group tightly */
+        .msg-assistant h4 + h4 {
+            margin-top: 0.15rem;
+        }
+
+        /* RAG footer (show-more note) separator */
+        .msg-assistant hr {
+            border: none;
+            border-top: 1px solid #c8cfd8;
+            margin: 0.8rem 0 0.4rem 0;
+        }
+
+        /* ---- Status indicator (shown during first-turn priming) ---- */
+        .msg-status {
+            font-size: 0.82rem;
+            color: #888;
+            font-style: italic;
+            padding: 0.2rem 0;
+        }
+
+        /* ---- Thinking indicator (persists until stream done) ---- */
+        .msg-thinking {
+            padding-top: 0.3rem;
+        }
+
+        .msg-thinking:empty {
+            display: none;
+        }
+
+        /* ---- Tool call blocks ---- */
+        .msg-tools-container {
+            margin-bottom: 0.5rem;
+        }
+
+        .msg-tools-container-summary {
+            font-size: 0.8em;
+            color: #556;
+            cursor: pointer;
+            user-select: none;
+            list-style: none;
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+            padding: 0.2rem 0;
+        }
+
+        .msg-tools-container-summary::-webkit-details-marker {
+            display: none;
+        }
+
+        .msg-tools-container-summary::before {
+            content: "\25B6";
+            font-size: 0.6em;
+            color: #8899bb;
+            transition: transform 0.12s;
+        }
+
+        .msg-tools-container[open] > .msg-tools-container-summary::before {
+            transform: rotate(90deg);
+        }
+
+        .msg-tools {
+            margin-top: 0.3rem;
+        }
+
+        .tool-call {
+            border: 1px solid #d0d8ee;
+            border-radius: 5px;
+            margin-bottom: 0.3rem;
+            font-size: 0.82em;
+            background: #f6f8ff;
+        }
+
+        .tool-call-summary {
+            padding: 0.32rem 0.6rem;
+            cursor: pointer;
+            list-style: none;
+            display: flex;
+            align-items: center;
+            gap: 0.45rem;
+            user-select: none;
+        }
+
+        .tool-call-summary::-webkit-details-marker {
+            display: none;
+        }
+
+        .tool-call-summary::before {
+            content: "\25B6";
+            font-size: 0.6em;
+            color: #8899bb;
+            transition: transform 0.12s;
+            flex-shrink: 0;
+        }
+
+        .tool-call[open] > .tool-call-summary::before {
+            transform: rotate(90deg);
+        }
+
+        .tool-call-summary code {
+            font-family: ui-monospace, monospace;
+            color: #1e3a5f;
+            font-weight: 600;
+        }
+
+        .tool-call-status {
+            color: #999;
+            font-size: 0.82em;
+            margin-left: auto;
+        }
+
+        .tool-call-section {
+            padding: 0.35rem 0.6rem;
+            border-top: 1px solid #d0d8ee;
+        }
+
+        .tool-call-label {
+            font-size: 0.75em;
+            color: #777;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 0.2rem;
+        }
+
+        .tool-call-section pre {
+            font-family: ui-monospace, monospace;
+            font-size: 0.84em;
+            background: #eef0f8;
+            padding: 0.35rem 0.55rem;
+            border-radius: 4px;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            word-break: break-all;
+            max-height: 180px;
+            overflow-y: auto;
+            margin: 0;
+        }
+
+        .msg-error {
+            align-self: center;
+            background: #fff3cd;
+            border: 1px solid #ffc107;
+            color: #664d03;
+            font-size: 0.85rem;
+            border-radius: 6px;
+            padding: 0.5rem 0.9rem;
+        }
+
+        /* Loading dots */
+        .loading-dots span {
+            display: inline-block;
+            width: 6px;
+            height: 6px;
+            background: #aaa;
+            border-radius: 50%;
+            margin: 0 2px;
+            animation: blink 1.2s infinite;
+        }
+
+        .loading-dots span:nth-child(2) {
+            animation-delay: 0.2s;
+        }
+
+        .loading-dots span:nth-child(3) {
+            animation-delay: 0.4s;
+        }
+
+        @keyframes blink {
+            0%, 80%, 100% {
+                opacity: 0.2;
+            }
+            40% {
+                opacity: 1;
+            }
+        }
+
+        /* ---- Input area ---- */
+        #input-area {
+            background: {{INPUT_AREA_BG_COLOR}};
+            padding: 0.75rem 1.25rem;
+            flex-shrink: 0;
+        }
+
+        @supports (background: hsl(from red h s l)) {
+            #input-area {
+                background: linear-gradient(to bottom right, {{INPUT_AREA_BG_COLOR}},
+                    hsl(from {{INPUT_AREA_BG_COLOR}} h s calc(l + 20)));
+            }
+        }
+
+        #input-inner {
+            max-width: 60rem;
+            width: 100%;
+            margin: 0 auto;
+        }
+
+        #message-input {
+            width: 100%;
+            resize: none;
+            font-size: 0.95rem;
+            font-family: inherit;
+            border: 1.5px solid {
+        {
+            INPUT_AREA_BG_COLOR
+        }
+        };
+            border-radius: 1rem;
+            padding: 0.55rem 0.8rem;
+            line-height: 1.5;
+            overflow: hidden;
+            outline: none;
+            transition: border-color 0.15s;
+        }
+
+        #message-input:focus {
+            border-color: {{INPUT_AREA_BG_COLOR}};
+            box-shadow: 0 0 0 1px rgba(30, 58, 95, 0.2);
+        }
+
+        /* ---- No-cards mode: flat assistant messages (enabled when show_response_cards=false) ---- */
+        body.no-response-cards .msg-assistant {
+            background: transparent;
+            border: none;
+            border-radius: 0;
+            padding: 0.3rem 0;
+        }
+
+        /* ---- Settings button + dropdown ---- */
+        #settings-btn {
+            background: none;
+            border: 1px solid rgba(168, 196, 232, 0.4);
+            color: rgba(255, 255, 255, 0.95);
+            border-radius: 4px;
+            padding: 0 0.45rem;
+            font-size: 1.15rem;
+            height: 1.6rem;
+            text-shadow: 0 0 1px rgba(255, 255, 255, 0.8);
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding-bottom: 0.13rem;
+            cursor: pointer;
+        }
+
+        #settings-btn:hover {
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        #settings-dropdown {
+            display: none;
+            position: absolute;
+            top: calc(100% + 8px);
+            right: 0;
+            background: #fff;
+            border: 1px solid #ccd;
+            border-radius: 6px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+            min-width: 140px;
+            max-height: 22rem;
+            overflow-y: auto;
+            z-index: 100;
+            padding: 0.4rem 0;
+        }
+
+        #settings-dropdown.open {
+            display: block;
+        }
+
+        .settings-section-label {
+            font-size: 0.72rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: #999;
+            padding: 0.3rem 0.85rem 0.15rem;
+        }
+
+        .settings-divider {
+            border: none;
+            border-top: 1px solid #eee;
+            margin: 0.3rem 0;
+        }
+
+        .theme-opt {
+            display: block;
+            width: 100%;
+            text-align: left;
+            padding: 0.35rem 1.1rem;
+            font-size: 0.82rem;
+            background: none;
+            border: none;
+            cursor: pointer;
+            color: #333;
+        }
+
+        .theme-opt:hover {
+            background: #eef3fa;
+        }
+
+        .theme-opt.active {
+            font-weight: 600;
+            color: #1e3a5f;
+        }
+
+        /* ---- Our dark theme: calibrated overrides ---- */
+        [data-theme="dark"] body {
+            color: #e0e0e0;
+            background: #111827;
+        }
+
+        [data-theme="dark"] #search-mode-banner {
+            background: #1a2d45;
+            border-bottom-color: #2a4a70;
+            color: #90b8e0;
+        }
+
+        [data-theme="dark"] #search-mode-banner a {
+            color: #90b8e0;
+        }
+
+        [data-theme="dark"] #catalog-bar {
+            background: #1e2433;
+            border-bottom-color: #2d3748;
+        }
+
+        [data-theme="dark"] #catalog-bar label {
+            color: #aaa;
+        }
+
+        [data-theme="dark"] #catalog-bar input {
+            background: #252d3d;
+            border-color: #444;
+            color: #e0e0e0;
+        }
+
+        [data-theme="dark"] .msg-user {
+            background: #1f3d6e;
+            color: #e0e8f0;
+            border-color: #2a5080;
+        }
+
+        [data-theme="dark"] .msg-assistant {
+            background: #1e2533;
+            border-color: #2d3748;
+        }
+
+        [data-theme="dark"] .msg-assistant pre {
+            background: #161d2d;
+        }
+
+        [data-theme="dark"] .msg-assistant .pre-wrapper .copy-btn {
+            background: #2a3448;
+            color: #ccc;
+        }
+
+        [data-theme="dark"] .msg-assistant .pre-wrapper .copy-btn.copied {
+            background: #2d6e31;
+            color: #fff;
+        }
+
+        [data-theme="dark"] .msg-assistant a {
+            border-bottom-color: #555;
+        }
+
+        [data-theme="dark"] .msg-assistant th, [data-theme="dark"] .msg-assistant td {
+            border-color: #3d4a5d;
+        }
+
+        [data-theme="dark"] .msg-assistant th {
+            background: #252d3d;
+        }
+
+        [data-theme="dark"] .msg-assistant h4 {
+            color: #bbb;
+        }
+
+        [data-theme="dark"] .msg-assistant hr {
+            border-top-color: #2d3748;
+        }
+
+        [data-theme="dark"] .ref-num {
+            background: #3a5a7a;
+        }
+
+        [data-theme="dark"] a.ref-bubble:hover .ref-num {
+            background: #2a4a6a;
+        }
+
+        [data-theme="dark"] .ref-section {
+            color: #999;
+        }
+
+        [data-theme="dark"] .ref-section summary {
+            color: #777;
+        }
+
+        [data-theme="dark"] .ref-section summary::before {
+            color: #666;
+        }
+
+        [data-theme="dark"] .ref-section summary:hover {
+            color: #aaa;
+        }
+
+        [data-theme="dark"] .ref-section .ref-list a {
+            color: #90b8e0;
+        }
+
+        [data-theme="dark"] .msg-tools-container-summary {
+            color: #99aabb;
+        }
+
+        [data-theme="dark"] .tool-call {
+            border-color: #2d3a5d;
+            background: #1a2235;
+        }
+
+        [data-theme="dark"] .tool-call-summary code {
+            color: #90b8e0;
+        }
+
+        [data-theme="dark"] .tool-call-section {
+            border-top-color: #2d3a5d;
+        }
+
+        [data-theme="dark"] .tool-call-label {
+            color: #999;
+        }
+
+        [data-theme="dark"] .tool-call-section pre {
+            background: #131a2a;
+        }
+
+        [data-theme="dark"] .msg-error {
+            background: #332200;
+            border-color: #885500;
+            color: #ffcc77;
+        }
+
+        [data-theme="dark"] .loading-dots span {
+            background: #555;
+        }
+
+        [data-theme="dark"] #input-area {
+            background: #1a2233;
+        }
+
+        @supports (background: hsl(from red h s l)) {
+            [data-theme="dark"] #input-area {
+                background: linear-gradient(to bottom right, #1a2233, hsl(from #1a2233 h s calc(l + 20)));
+            }
+        }
+
+        [data-theme="dark"] #message-input {
+            background: #252d3d;
+            color: #e0e0e0;
+            border-color: #3a4a60;
+        }
+
+        [data-theme="dark"] #message-input:focus {
+            border-color: #4a6a9a;
+            box-shadow: 0 0 0 1px rgba(74, 106, 154, 0.4);
+        }
+
+        [data-theme="dark"] #message-input::placeholder {
+            color: #666;
+        }
+
+        [data-theme="dark"] #settings-dropdown {
+            background: #1e2533;
+            border-color: #2d3748;
+        }
+
+        [data-theme="dark"] .settings-section-label {
+            color: #666;
+        }
+
+        [data-theme="dark"] .settings-divider {
+            border-top-color: #2d3748;
+        }
+
+        [data-theme="dark"] .theme-opt {
+            color: #e0e0e0;
+        }
+
+        [data-theme="dark"] .theme-opt:hover {
+            background: #252d3d;
+        }
+
+        [data-theme="dark"] .theme-opt.active {
+            color: #90b8e0;
+        }
+
+        /* ---- DaisyUI theme pass-through: all themes except our light/dark ----
+           DaisyUI v4 vars are bare oklch channels (e.g. --b1: 100% 0 0), not full color values.
+           Wrap each with oklch() once here; downstream rules use --_b1 etc. as valid colors. ---- */
+        html:not([data-theme="light"]):not([data-theme="dark"]) {
+            --_b1: oklch(var(--b1));
+            --_b2: oklch(var(--b2));
+            --_b3: oklch(var(--b3));
+            --_bc: oklch(var(--bc));
+            --_p: oklch(var(--p));
+            --_pc: oklch(var(--pc));
+        }
+
+        html:not([data-theme="light"]):not([data-theme="dark"]) body {
+            background: var(--_b1);
+            color: var(--_bc);
+        }
+
+        html:not([data-theme="light"]):not([data-theme="dark"]) #header {
+            background: var(--_p);
+            color: var(--_pc);
+        }
+
+        @supports (background: hsl(from red h s l)) {
+            html:not([data-theme="light"]):not([data-theme="dark"]) #header {
+                background: linear-gradient(to bottom right, var(--_p), hsl(from var(--_p) h s calc(l + 20)));
+            }
+        }
+
+        html:not([data-theme="light"]):not([data-theme="dark"]) #clear-history-btn,
+        html:not([data-theme="light"]):not([data-theme="dark"]) #rag-toggle-btn,
+        html:not([data-theme="light"]):not([data-theme="dark"]) #settings-btn {
+            color: color-mix(in oklch, var(--_pc) 80%, transparent);
+            border-color: color-mix(in oklch, var(--_pc) 30%, transparent);
+        }
+
+        html:not([data-theme="light"]):not([data-theme="dark"]) #clear-history-btn:hover,
+        html:not([data-theme="light"]):not([data-theme="dark"]) #rag-toggle-btn:hover,
+        html:not([data-theme="light"]):not([data-theme="dark"]) #settings-btn:hover {
+            background: color-mix(in oklch, var(--_pc) 10%, transparent);
+        }
+
+        html:not([data-theme="light"]):not([data-theme="dark"]) #logout-link {
+            color: color-mix(in oklch, var(--_pc) 80%, transparent);
+        }
+
+        html:not([data-theme="light"]):not([data-theme="dark"]) #search-mode-banner {
+            background: var(--_b2);
+            border-bottom-color: var(--_b3);
+            color: var(--_p);
+        }
+
+        html:not([data-theme="light"]):not([data-theme="dark"]) #search-mode-banner a {
+            color: var(--_p);
+        }
+
+        html:not([data-theme="light"]):not([data-theme="dark"]) #catalog-bar {
+            background: var(--_b1);
+            border-bottom-color: var(--_b3);
+        }
+
+        html:not([data-theme="light"]):not([data-theme="dark"]) #catalog-bar label {
+            color: color-mix(in oklch, var(--_bc) 65%, transparent);
+        }
+
+        html:not([data-theme="light"]):not([data-theme="dark"]) #catalog-bar input {
+            background: var(--_b1);
+            border-color: var(--_b3);
+            color: var(--_bc);
+        }
+
+        html:not([data-theme="light"]):not([data-theme="dark"]) .msg-user {
+            background: color-mix(in oklch, var(--_p) 25%, var(--_b1));
+            color: var(--_bc);
+            border-color: color-mix(in oklch, var(--_p) 50%, var(--_b1));
+        }
+
+        html:not([data-theme="light"]):not([data-theme="dark"]) .msg-assistant {
+            background: var(--_b2);
+            border-color: var(--_b3);
+        }
+
+        html:not([data-theme="light"]):not([data-theme="dark"]) .msg-assistant pre {
+            background: var(--_b3);
+        }
+
+        html:not([data-theme="light"]):not([data-theme="dark"]) .msg-assistant .pre-wrapper .copy-btn {
+            background: var(--_b3);
+            color: var(--_bc);
+        }
+
+        html:not([data-theme="light"]):not([data-theme="dark"]) .msg-assistant a {
+            border-bottom-color: color-mix(in oklch, var(--_bc) 30%, transparent);
+        }
+
+        html:not([data-theme="light"]):not([data-theme="dark"]) .msg-assistant th,
+        html:not([data-theme="light"]):not([data-theme="dark"]) .msg-assistant td {
+            border-color: var(--_b3);
+        }
+
+        html:not([data-theme="light"]):not([data-theme="dark"]) .msg-assistant th {
+            background: var(--_b2);
+        }
+
+        html:not([data-theme="light"]):not([data-theme="dark"]) .msg-assistant h4 {
+            color: color-mix(in oklch, var(--_bc) 65%, transparent);
+        }
+
+        html:not([data-theme="light"]):not([data-theme="dark"]) .msg-assistant hr {
+            border-top-color: var(--_b3);
+        }
+
+        html:not([data-theme="light"]):not([data-theme="dark"]) .ref-num {
+            background: color-mix(in oklch, var(--_p) 70%, transparent);
+        }
+
+        html:not([data-theme="light"]):not([data-theme="dark"]) a.ref-bubble:hover .ref-num {
+            background: color-mix(in oklch, var(--_p) 90%, transparent);
+        }
+
+        html:not([data-theme="light"]):not([data-theme="dark"]) .ref-section {
+            color: color-mix(in oklch, var(--_bc) 55%, transparent);
+        }
+
+        html:not([data-theme="light"]):not([data-theme="dark"]) .ref-section summary {
+            color: color-mix(in oklch, var(--_bc) 45%, transparent);
+        }
+
+        html:not([data-theme="light"]):not([data-theme="dark"]) .ref-section summary::before {
+            color: color-mix(in oklch, var(--_bc) 30%, transparent);
+        }
+
+        html:not([data-theme="light"]):not([data-theme="dark"]) .ref-section summary:hover {
+            color: color-mix(in oklch, var(--_bc) 65%, transparent);
+        }
+
+        html:not([data-theme="light"]):not([data-theme="dark"]) .ref-section .ref-list a {
+            color: var(--_p);
+        }
+
+        html:not([data-theme="light"]):not([data-theme="dark"]) .msg-status {
+            color: color-mix(in oklch, var(--_bc) 50%, transparent);
+        }
+
+        html:not([data-theme="light"]):not([data-theme="dark"]) .msg-tools-container-summary {
+            color: color-mix(in oklch, var(--_bc) 55%, transparent);
+        }
+
+        html:not([data-theme="light"]):not([data-theme="dark"]) .msg-tools-container-summary::before {
+            color: color-mix(in oklch, var(--_p) 60%, transparent);
+        }
+
+        html:not([data-theme="light"]):not([data-theme="dark"]) .tool-call {
+            border-color: var(--_b3);
+            background: var(--_b2);
+        }
+
+        html:not([data-theme="light"]):not([data-theme="dark"]) .tool-call-summary::before {
+            color: color-mix(in oklch, var(--_p) 60%, transparent);
+        }
+
+        html:not([data-theme="light"]):not([data-theme="dark"]) .tool-call-summary code {
+            color: var(--_p);
+        }
+
+        html:not([data-theme="light"]):not([data-theme="dark"]) .tool-call-status {
+            color: color-mix(in oklch, var(--_bc) 45%, transparent);
+        }
+
+        html:not([data-theme="light"]):not([data-theme="dark"]) .tool-call-section {
+            border-top-color: var(--_b3);
+        }
+
+        html:not([data-theme="light"]):not([data-theme="dark"]) .tool-call-label {
+            color: color-mix(in oklch, var(--_bc) 50%, transparent);
+        }
+
+        html:not([data-theme="light"]):not([data-theme="dark"]) .tool-call-section pre {
+            background: var(--_b1);
+        }
+
+        html:not([data-theme="light"]):not([data-theme="dark"]) .loading-dots span {
+            background: color-mix(in oklch, var(--_bc) 35%, transparent);
+        }
+
+        html:not([data-theme="light"]):not([data-theme="dark"]) #input-area {
+            background: var(--_b2);
+        }
+
+        @supports (background: hsl(from red h s l)) {
+            html:not([data-theme="light"]):not([data-theme="dark"]) #input-area {
+                background: linear-gradient(to bottom right, var(--_b2), hsl(from var(--_b2) h s calc(l + 20)));
+            }
+        }
+
+        html:not([data-theme="light"]):not([data-theme="dark"]) #message-input {
+            background: var(--_b1);
+            border-color: var(--_b2);
+            color: var(--_bc);
+        }
+
+        html:not([data-theme="light"]):not([data-theme="dark"]) #message-input:focus {
+            border-color: color-mix(in oklch, var(--_p) 50%, var(--_b1));
+            box-shadow: 0 0 0 1px color-mix(in oklch, var(--_p) 20%, transparent);
+        }
+
+        html:not([data-theme="light"]):not([data-theme="dark"]) #settings-dropdown {
+            background: var(--_b2);
+            border-color: color-mix(in oklch, var(--_bc) 20%, transparent);
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+        }
+
+        html:not([data-theme="light"]):not([data-theme="dark"]) .settings-section-label {
+            color: color-mix(in oklch, var(--_bc) 60%, transparent);
+        }
+
+        html:not([data-theme="light"]):not([data-theme="dark"]) .settings-divider {
+            border-top-color: color-mix(in oklch, var(--_bc) 15%, transparent);
+        }
+
+        html:not([data-theme="light"]):not([data-theme="dark"]) .theme-opt {
+            color: var(--_bc);
+        }
+
+        html:not([data-theme="light"]):not([data-theme="dark"]) .theme-opt:hover {
+            background: var(--_b3);
+        }
+
+        html:not([data-theme="light"]):not([data-theme="dark"]) .theme-opt.active {
+            color: var(--_p);
+            font-weight: 600;
+        }
+    </style>
 </head>
 <body>
 
 <div id="header">
-  <div id="header-left">
-    <img id="header-logo" src="{{HEADER_LOGO_URL}}" alt="">
-    <h1 id="catalog-title">{{HEADER_TITLE}}</h1>
-  </div>
-  <div id="header-right">
-    <button id="rag-toggle-btn">Search only</button>
-    <button id="clear-history-btn" style="display:none">Clear chat</button>
-    <span id="user-label"></span>
-    <a id="logout-link" href="logout">Log out</a>
-    <button id="settings-btn" aria-label="Settings" title="Settings">&#9881;</button>
-    <div id="settings-dropdown" role="menu">
-      <div class="settings-section-label">Theme</div>
-      <button class="theme-opt" data-theme-val="auto">Auto</button>
-      <button class="theme-opt" data-theme-val="light">Light</button>
-      <button class="theme-opt" data-theme-val="dark">Dark</button>
+    <div id="header-left">
+        <img id="header-logo" src="{{HEADER_LOGO_URL}}" alt="">
+        <h1 id="catalog-title">{{HEADER_TITLE}}</h1>
     </div>
-  </div>
+    <div id="header-right">
+        <button id="rag-toggle-btn">Search only</button>
+        <button id="clear-history-btn" style="display:none">Clear chat</button>
+        <span id="user-label"></span>
+        <a id="logout-link" href="logout">Log out</a>
+        <button id="settings-btn" aria-label="Settings" title="Settings">&#9881;</button>
+        <div id="settings-dropdown" role="menu">
+            <div class="settings-section-label">Theme</div>
+            <button class="theme-opt" data-theme-val="auto">Auto</button>
+            <button class="theme-opt" data-theme-val="light">Light</button>
+            <button class="theme-opt" data-theme-val="dark">Dark</button>
+        </div>
+    </div>
 </div>
 
 <div id="search-mode-banner">
-  Search-only mode — results are pulled directly from indexed documentation, not generated by AI
-  <span id="search-mode-login-hint" style="display:none"> — <a href="login">login</a> for AI-assisted features</span>
+    Search-only mode — results are pulled directly from indexed documentation, not generated by AI
+    <span id="search-mode-login-hint" style="display:none"> — <a href="login">login</a> for AI-assisted features</span>
 </div>
 
 <div id="catalog-bar">
-  <label>Hostname <input id="gp-hostname" type="text" placeholder="e.g. facebase.org"></label>
-  <label>Catalog ID <input id="gp-catalog-id" type="text" placeholder="e.g. 1"></label>
+    <label>Hostname <input id="gp-hostname" type="text" placeholder="e.g. facebase.org"></label>
+    <label>Catalog ID <input id="gp-catalog-id" type="text" placeholder="e.g. 1"></label>
 </div>
 
-<div id="thread-scroller"><div id="thread"></div></div>
+<div id="thread-scroller">
+    <div id="thread"></div>
+</div>
 
 <div id="input-area">
-  <div id="input-inner">
-    <textarea id="message-input" rows="1" placeholder="Ask a question..." aria-label="Message"></textarea>
-  </div>
+    <div id="input-inner">
+        <textarea id="message-input" rows="1" placeholder="Ask a question..." aria-label="Message"></textarea>
+    </div>
 </div>
 
 <script src="static/chat.js"></script>
