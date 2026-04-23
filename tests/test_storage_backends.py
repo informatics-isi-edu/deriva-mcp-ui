@@ -81,7 +81,13 @@ async def store(request, monkeypatch):
             pytest.skip("PostgreSQL backend tests skipped on Windows")
         s = PostgreSQLSessionStore(url=_postgresql.url(), ttl=60)
         yield s
+        # Truncate durable tables so cost/identity state does not bleed
+        # between tests (the module-level Postgresql instance is shared).
         if s._pool is not None:
+            async with s._pool.acquire() as conn:
+                await conn.execute(
+                    "TRUNCATE chatbot_sessions, chatbot_user_costs, chatbot_users"
+                )
             await s._pool.close()
 
     else:
