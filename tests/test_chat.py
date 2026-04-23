@@ -94,6 +94,24 @@ def _make_chunk(
     chunk.choices = [MagicMock()]
     chunk.choices[0].delta = delta
     chunk.choices[0].finish_reason = finish_reason
+    chunk.usage = None  # explicit None so usage audit is not triggered spuriously
+    return chunk
+
+
+def _make_usage_chunk(prompt_tokens: int, completion_tokens: int) -> MagicMock:
+    """Build a mock LiteLLM usage chunk (final chunk with token counts)."""
+    usage = MagicMock()
+    usage.prompt_tokens = prompt_tokens
+    usage.completion_tokens = completion_tokens
+    usage.cache_read_input_tokens = 0
+    usage.cache_creation_input_tokens = 0
+    chunk = MagicMock()
+    chunk.choices = [MagicMock()]
+    chunk.choices[0].delta = MagicMock()
+    chunk.choices[0].delta.content = None
+    chunk.choices[0].delta.tool_calls = None
+    chunk.choices[0].finish_reason = None
+    chunk.usage = usage
     return chunk
 
 
@@ -275,6 +293,72 @@ async def test_run_chat_turn_no_tools_yields_text():
     assert len(sess.history) == 2
     assert sess.history[0] == {"role": "user", "content": "hi"}
     assert sess.history[1]["role"] == "assistant"
+
+
+async def test_run_chat_turn_emits_llm_usage_audit_event():
+    s = _settings()
+    sess = _session()
+    sess.credenza_session = {"full_name": "Alice Smith", "email": "alice@example.org"}
+    sess.tools = [_openai_tool("get_entities")]
+
+    chunks = [
+        _make_chunk(content="Hello", finish_reason="stop"),
+        _make_usage_chunk(prompt_tokens=120, completion_tokens=30),
+    ]
+
+    with patch("deriva_mcp_ui.chat.audit_event") as mock_audit:
+        with patch("deriva_mcp_ui.chat.litellm") as mock_litellm:
+            mock_litellm.acompletion = AsyncMock(return_value=_async_iter(chunks))
+            mock_litellm.cost_per_token.return_value = (0.0012, 0.0003)
+            mock_litellm.RateLimitError = litellm_rate_limit_error()
+            mock_litellm.ServiceUnavailableError = litellm_service_unavailable_error()
+            async for _ in run_chat_turn("hi", sess, s):
+                pass
+
+    usage_calls = [c for c in mock_audit.call_args_list if c.args[0] == "llm_usage"]
+    assert len(usage_calls) == 1
+    kw = usage_calls[0].kwargs
+    assert kw["user_id"] == "Alice Smith <alice@example.org> (alice)"
+    assert kw["model"] == "claude-sonnet-4-6"
+    assert kw["prompt_tokens"] == 120
+    assert kw["completion_tokens"] == 30
+    assert kw["cache_read_input_tokens"] == 0
+    assert kw["cache_creation_input_tokens"] == 0
+    assert abs(kw["cost_usd"] - 0.0015) < 1e-9
+
+
+async def test_run_chat_turn_passes_cache_tokens_to_cost_per_token():
+    """Cache token counts from usage are forwarded to cost_per_token for accurate pricing."""
+    s = _settings()
+    sess = _session()
+    sess.tools = [_openai_tool("get_entities")]
+
+    usage_chunk = _make_usage_chunk(prompt_tokens=1000, completion_tokens=50)
+    # Simulate Anthropic returning cache counts on the usage object
+    usage_chunk.usage.cache_read_input_tokens = 900
+    usage_chunk.usage.cache_creation_input_tokens = 0
+
+    chunks = [
+        _make_chunk(content="Hi", finish_reason="stop"),
+        usage_chunk,
+    ]
+
+    with patch("deriva_mcp_ui.chat.audit_event") as mock_audit:
+        with patch("deriva_mcp_ui.chat.litellm") as mock_litellm:
+            mock_litellm.acompletion = AsyncMock(return_value=_async_iter(chunks))
+            mock_litellm.cost_per_token.return_value = (0.0001, 0.0002)
+            mock_litellm.RateLimitError = litellm_rate_limit_error()
+            mock_litellm.ServiceUnavailableError = litellm_service_unavailable_error()
+            async for _ in run_chat_turn("hi", sess, s):
+                pass
+
+    _, cost_kwargs = mock_litellm.cost_per_token.call_args
+    assert cost_kwargs["cache_read_input_tokens"] == 900
+    assert cost_kwargs["cache_creation_input_tokens"] == 0
+
+    kw = [c for c in mock_audit.call_args_list if c.args[0] == "llm_usage"][0].kwargs
+    assert kw["cache_read_input_tokens"] == 900
+    assert kw["cache_creation_input_tokens"] == 0
 
 
 async def test_run_chat_turn_fetches_tools_when_none():

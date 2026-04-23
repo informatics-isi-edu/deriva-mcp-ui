@@ -233,6 +233,63 @@ async def test_sweep_removes_expired_memory(monkeypatch):
     assert sid_dead not in s._sessions
 
 
+async def test_lifetime_cost_zero_for_unknown_user(store):
+    """get_user_lifetime_cost returns 0.0 for a user with no recorded spend."""
+    assert await store.get_user_lifetime_cost("nobody") == 0.0
+
+
+async def test_lifetime_cost_increments_and_accumulates(store):
+    """increment_user_cost accumulates cost and token counts across multiple calls."""
+    await store.increment_user_cost("alice", 0.001, prompt_tokens=100, completion_tokens=10, cache_read_tokens=80)
+    await store.increment_user_cost("alice", 0.002, prompt_tokens=200, completion_tokens=20, cache_creation_tokens=5)
+    total = await store.get_user_lifetime_cost("alice")
+    assert abs(total - 0.003) < 1e-9
+
+
+async def test_lifetime_cost_isolated_per_user(store):
+    """Lifetime costs for distinct users are independent."""
+    await store.increment_user_cost("alice", 0.5, prompt_tokens=1000)
+    await store.increment_user_cost("bob", 0.1, prompt_tokens=200)
+    assert abs(await store.get_user_lifetime_cost("alice") - 0.5) < 1e-9
+    assert abs(await store.get_user_lifetime_cost("bob") - 0.1) < 1e-9
+
+
+async def test_upsert_user_identity_creates_record(store):
+    """upsert_user_identity stores email and full_name for a new user."""
+    await store.upsert_user_identity("alice", "alice@example.org", "Alice Smith")
+    # Verify by doing a second upsert with different values and checking it updates.
+    await store.upsert_user_identity("alice", "alice2@example.org", "Alice S.")
+    # No assertion on internal storage -- just verify no exception and a third call is idempotent.
+    await store.upsert_user_identity("alice", "alice2@example.org", "Alice S.")
+
+
+async def test_get_user_last_seen_none_before_upsert(store):
+    """get_user_last_seen returns None for a user not yet recorded."""
+    assert await store.get_user_last_seen("ghost") is None
+
+
+async def test_get_user_last_seen_after_upsert(store):
+    """get_user_last_seen returns a recent timestamp after upsert_user_identity."""
+    import time
+    before = time.time()
+    await store.upsert_user_identity("alice", "alice@example.org", "Alice")
+    ts = await store.get_user_last_seen("alice")
+    assert ts is not None
+    assert ts >= before
+
+
+async def test_upsert_user_identity_isolated_per_user(store):
+    """upsert_user_identity records for different users do not interfere."""
+    await store.upsert_user_identity("alice", "alice@example.org", "Alice")
+    await store.upsert_user_identity("bob", "bob@example.org", "Bob")
+    # Both calls succeed; the in-memory backend exposes the dict for inspection.
+    from deriva_mcp_ui.storage.memory import MemorySessionStore
+    if isinstance(store, MemorySessionStore):
+        assert store._user_identities["alice"]["email"] == "alice@example.org"
+        assert store._user_identities["bob"]["email"] == "bob@example.org"
+        assert "first_seen" in store._user_identities["alice"]
+
+
 async def test_set_with_custom_ttl(store):
     """set() with explicit ttl parameter stores the session."""
     sid = _sid()

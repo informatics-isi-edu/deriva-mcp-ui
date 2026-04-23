@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Any
 
 import litellm
 
+from .audit import audit_event
 from .mcp_client import MCPAuthError, call_tool, get_prompt, list_tools, open_session
 
 if TYPE_CHECKING:
@@ -1193,6 +1194,25 @@ class ChatCancelled(Exception):
     """Raised when the client disconnects and the chat turn is aborted."""
 
 
+def _user_label(session: "Session", include_email: bool = True) -> str:
+    """Build a composite user identifier for LLM provider tracking and audit logs.
+
+    Pass include_email=False when sending to LLM providers that reject email addresses
+    in the user field (e.g. Anthropic).
+    """
+    cred = session.credenza_session or {}
+    client_block = cred.get("client") or {}
+    full_name = cred.get("full_name") or client_block.get("full_name") or ""
+    email = cred.get("email") or client_block.get("email") or ""
+    if include_email:
+        if full_name or email:
+            return f"{full_name} <{email}> ({session.user_id})"
+    else:
+        if full_name:
+            return f"{full_name} ({session.user_id})"
+    return session.user_id
+
+
 async def run_chat_turn(
     user_message: str,
     session: Session,
@@ -1303,6 +1323,8 @@ async def run_chat_turn(
     if settings.llm_api_base:
         api_kwargs["api_base"] = settings.llm_api_base
 
+    user_label = _user_label(session)                        # full composite for audit
+    user_label_provider = _user_label(session, include_email=False)  # no email for LLM provider
     prev_tool_names: set[str] = set()  # tools called in the previous loop iteration
 
     while True:
@@ -1313,12 +1335,14 @@ async def run_chat_turn(
         response_content = ""
         tool_call_acc: dict[int, dict[str, str]] = {}
         finish_reason: str | None = None
+        captured_usage = None
 
         for attempt in range(_MAX_API_RETRIES + 1):
             text_yielded = False
             response_content = ""
             tool_call_acc = {}
             finish_reason = None
+            captured_usage = None
             try:
                 response_stream = await litellm.acompletion(
                     model=model,
@@ -1326,9 +1350,14 @@ async def run_chat_turn(
                     tools=tools_with_cache if tools_with_cache else None,
                     max_tokens=_MAX_TOKENS,
                     stream=True,
+                    stream_options={"include_usage": True},
+                    user=user_label_provider,
                     **api_kwargs,
                 )
                 async for chunk in response_stream:
+                    usage = getattr(chunk, "usage", None)
+                    if usage:
+                        captured_usage = usage
                     choice = chunk.choices[0]
                     if choice.finish_reason:
                         finish_reason = choice.finish_reason
@@ -1339,6 +1368,36 @@ async def run_chat_turn(
                         response_content += delta.content
                     if hasattr(delta, "tool_calls") and delta.tool_calls:
                         _accumulate_tool_call_deltas(tool_call_acc, delta.tool_calls)
+                if captured_usage:
+                    cache_read_tokens = getattr(captured_usage, "cache_read_input_tokens", 0) or 0
+                    cache_creation_tokens = getattr(captured_usage, "cache_creation_input_tokens", 0) or 0
+                    try:
+                        prompt_cost, completion_cost = litellm.cost_per_token(
+                            model=model,
+                            prompt_tokens=captured_usage.prompt_tokens,
+                            completion_tokens=captured_usage.completion_tokens,
+                            cache_read_input_tokens=cache_read_tokens,
+                            cache_creation_input_tokens=cache_creation_tokens,
+                        )
+                        cost = prompt_cost + completion_cost
+                    except Exception:
+                        cost = None
+                    if cost is not None:
+                        session.session_cost_usd += cost
+                    session.session_prompt_tokens += captured_usage.prompt_tokens
+                    session.session_completion_tokens += captured_usage.completion_tokens
+                    session.session_cache_read_tokens += cache_read_tokens
+                    session.session_cache_creation_tokens += cache_creation_tokens
+                    audit_event(
+                        "llm_usage",
+                        user_id=user_label,
+                        model=model,
+                        prompt_tokens=captured_usage.prompt_tokens,
+                        completion_tokens=captured_usage.completion_tokens,
+                        cache_read_input_tokens=cache_read_tokens,
+                        cache_creation_input_tokens=cache_creation_tokens,
+                        cost_usd=cost,
+                    )
                 break  # success -- exit retry loop
             except litellm.RateLimitError:
                 if text_yielded or attempt >= _MAX_API_RETRIES:

@@ -33,6 +33,13 @@ class Session:
     # Per-session RAG-only override: when True, bypass LLM even if the server
     # is configured for LLM tier.
     rag_only_override: bool = False
+    # Approximate LLM spend and token counts accumulated during this session.
+    # Reset when the session expires; use the store's lifetime totals for durable history.
+    session_cost_usd: float = 0.0
+    session_prompt_tokens: int = 0
+    session_completion_tokens: int = 0
+    session_cache_read_tokens: int = 0
+    session_cache_creation_tokens: int = 0
 
     def to_json(self) -> str:
         return json.dumps(
@@ -52,6 +59,11 @@ class Session:
                 "primed_guides": self.primed_guides,
                 "primed_ermrest": self.primed_ermrest,
                 "rag_only_override": self.rag_only_override,
+                "session_cost_usd": self.session_cost_usd,
+                "session_prompt_tokens": self.session_prompt_tokens,
+                "session_completion_tokens": self.session_completion_tokens,
+                "session_cache_read_tokens": self.session_cache_read_tokens,
+                "session_cache_creation_tokens": self.session_cache_creation_tokens,
             }
         )
 
@@ -74,6 +86,11 @@ class Session:
             primed_guides=d.get("primed_guides", ""),
             primed_ermrest=d.get("primed_ermrest", ""),
             rag_only_override=d.get("rag_only_override", False),
+            session_cost_usd=d.get("session_cost_usd", 0.0),
+            session_prompt_tokens=d.get("session_prompt_tokens", 0),
+            session_completion_tokens=d.get("session_completion_tokens", 0),
+            session_cache_read_tokens=d.get("session_cache_read_tokens", 0),
+            session_cache_creation_tokens=d.get("session_cache_creation_tokens", 0),
         )
 
 
@@ -97,4 +114,31 @@ class SessionStore(Protocol):
 
     async def sweep(self) -> None:
         """Evict expired sessions (called periodically by the memory backend)."""
+        ...  # pragma: no cover
+
+    async def increment_user_cost(
+        self,
+        user_id: str,
+        cost_usd: float,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+        cache_read_tokens: int = 0,
+        cache_creation_tokens: int = 0,
+    ) -> None:
+        """Atomically add cost and token counts to the durable lifetime totals for user_id."""
+        ...  # pragma: no cover
+
+    async def get_user_lifetime_cost(self, user_id: str) -> float:
+        """Return the durable lifetime LLM spend total for user_id (0.0 if unknown)."""
+        ...  # pragma: no cover
+
+    async def upsert_user_identity(self, user_id: str, email: str, full_name: str) -> None:
+        """Record or refresh identity info for user_id.
+
+        Sets first_seen on insert; updates email, full_name, and last_seen on conflict.
+        """
+        ...  # pragma: no cover
+
+    async def get_user_last_seen(self, user_id: str) -> float | None:
+        """Return the last_seen Unix timestamp for user_id, or None if not recorded."""
         ...  # pragma: no cover

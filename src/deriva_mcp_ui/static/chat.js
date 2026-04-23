@@ -93,6 +93,41 @@
   const LOADING_DOTS_HTML =
     '<span class="loading-dots"><span></span><span></span><span></span></span>';
 
+  // ------------------------------------------------------------------
+  // User label tooltip helpers
+  // ------------------------------------------------------------------
+
+  function _applyUserTooltip(info) {
+    var shortName = info.display_name || info.user_id || "";
+    var lines = [shortName];
+    if (info.full_name && info.full_name !== shortName) lines.push(info.full_name);
+    if (info.email) lines.push(info.email);
+    if (info.user_id && info.user_id !== shortName) lines.push(info.user_id);
+    if (info.last_login != null) {
+      var d = new Date(info.last_login * 1000);
+      lines.push("Last login: " + d.toLocaleString(undefined, {
+        year: "numeric", month: "long", day: "numeric",
+        hour: "2-digit", minute: "2-digit"
+      }));
+    }
+    if (info.session_cost_usd != null) {
+      lines.push("Usage (this session): $" + info.session_cost_usd.toFixed(4));
+    }
+    if (info.lifetime_cost_usd != null) {
+      lines.push("Usage (lifetime): $" + info.lifetime_cost_usd.toFixed(4));
+    }
+    userLabel.title = lines.join("\n");
+  }
+
+  async function refreshCostTooltip() {
+    if (!userLabel.textContent) return;
+    try {
+      const resp = await fetch("session-info");
+      if (!resp.ok) return;
+      _applyUserTooltip(await resp.json());
+    } catch { /* non-critical, ignore */ }
+  }
+
   let busy = false;
   let abortController = null;
 
@@ -165,11 +200,7 @@
     var shortName = info.display_name || info.user_id || "";
     if (shortName && shortName !== "Anonymous") {
       userLabel.textContent = shortName;
-      var tooltipLines = [shortName];
-      if (info.full_name && info.full_name !== shortName) tooltipLines.push(info.full_name);
-      if (info.email) tooltipLines.push(info.email);
-      if (info.user_id && info.user_id !== shortName) tooltipLines.push(info.user_id);
-      userLabel.title = tooltipLines.join("\n");
+      _applyUserTooltip(info);
     }
 
     if (info.catalog_mode === "default" && info.label) {
@@ -479,6 +510,9 @@
         assistantEl.remove();
       }
     }
+
+    // Refresh cost tooltip after each successful turn (fire-and-forget).
+    refreshCostTooltip();
   }
 
   // ------------------------------------------------------------------

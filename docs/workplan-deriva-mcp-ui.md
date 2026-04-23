@@ -1,8 +1,11 @@
 # deriva-mcp-ui Workplan and Design
 
 **Status:** Phases 0-10 code-complete + Display Polish (2026-04-16). Phase 9 design only (not
-implemented). Phase 10 RAG-only mode live-tested and display-polished (2026-04-09). 227 tests,
-85% coverage.
+implemented). Phase 10 RAG-only mode live-tested and display-polished (2026-04-09).
+Per-user LLM accounting Options A and B complete (2026-04-22): provider-side user tagging,
+local usage audit events with cache-aware cost via `litellm.cost_per_token()`, durable
+per-user cost/token totals in store, user identity table, and hover tooltip in UI.
+263 tests, 86% coverage.
 
 **Target repo:** `deriva-mcp-ui`
 
@@ -1366,92 +1369,47 @@ tier. Document Ollama setup in docker compose.
 
 ---
 
-## Planned: Per-User LLM Token and Resource Accounting (Design Note)
+## Per-User LLM Token and Resource Accounting
 
-**Status:** Not started. Design only.
-
----
-
-### Motivation
-
-The current audit log (`audit_event("chat_complete", user_id=..., duration_ms=...)`) records
-per-user request counts and latency, but does not capture LLM token usage. For deployments
-that pay per-token (Anthropic, OpenAI) or want to enforce per-user quotas, a structured
-per-user token record is needed.
-
-Additionally, the user identity known to mcp-ui (from the Credenza session) and the user
-identity known to mcp-core (from token introspection) are logged independently. A correlation
-ID would allow joining the two log streams at sub-turn granularity (i.e., "which mcp-core tool
-calls belonged to which mcp-ui chat turn").
+**Status:** Options A and B complete (2026-04-22). Option C not yet started.
 
 ---
 
-### Option A -- Pass `user` to the LLM provider (provider-side tracking)
+### Option A -- Pass `user` to the LLM provider (provider-side tracking) ✓
 
-LiteLLM forwards a `user` parameter to both Anthropic (`metadata.user_id`) and OpenAI
-(`user`). Adding it to the `litellm.acompletion()` call in `chat.py` is a one-line change:
+Implemented. `litellm.acompletion()` receives `user=_user_label(session, include_email=False)`
+(full name + user_id composite; email excluded because Anthropic rejects user_id strings
+containing `@`). Effect: Anthropic Console shows token spend broken down by user.
 
-```python
-response_stream = await litellm.acompletion(
-    ...
-    user=session.user_id,
-)
-```
+### Option B -- Capture `usage` from the LiteLLM streaming response (local accounting) ✓
 
-Effect: the provider's own usage dashboard (Anthropic Console, OpenAI Usage API) shows
-token spend broken down by `user_id`. Zero local infra required. Only useful if the
-provider exposes per-user breakdowns in their dashboard or usage API.
+Implemented. After each streaming turn:
 
----
+- `stream_options={"include_usage": True}` ensures the final chunk carries `chunk.usage`.
+- `cache_read_input_tokens` and `cache_creation_input_tokens` are extracted from the usage
+  object and passed to `litellm.cost_per_token()` (note: `completion_cost()` no longer
+  accepts raw token counts -- use `cost_per_token()` which returns `(prompt_cost, completion_cost)`).
+- `audit_event("llm_usage", ...)` emits model, prompt_tokens, completion_tokens,
+  cache_read_input_tokens, cache_creation_input_tokens, and cost_usd.
+- `session.session_cost_usd` / `session_prompt_tokens` / etc. accumulate the turn totals
+  in-session. Server.py computes the per-turn delta and calls `store.increment_user_cost()`
+  to persist durable lifetime totals that survive session expiry.
 
-### Option B -- Capture `usage` from the LiteLLM streaming response (local accounting)
+**Storage:** `chatbot_user_costs` table (all backends) holds lifetime totals:
+`lifetime_cost_usd`, `total_prompt_tokens`, `total_completion_tokens`,
+`total_cache_read_tokens`, `total_cache_creation_tokens`.
 
-LiteLLM's final streaming chunk has `chunk.usage` populated (prompt_tokens,
-completion_tokens, total_tokens). Capturing it and emitting an `audit_event` gives a
-structured local record per user per turn, queryable from any log aggregator:
+**User identity table:** `chatbot_users` (all backends) — `user_id`, `email`, `full_name`,
+`first_seen`, `last_seen` — upserted on every authenticated turn. Paves the way for an
+admin cost-breakdown page.
 
-```python
-# inside the async for chunk in response_stream loop:
-usage = getattr(chunk, "usage", None)
-if usage:
-    captured_usage = usage
-
-# after the loop -- emit alongside existing chat_complete event:
-if captured_usage:
-    audit_event(
-        "llm_usage",
-        user_id=session.user_id,
-        model=model,
-        prompt_tokens=captured_usage.prompt_tokens,
-        completion_tokens=captured_usage.completion_tokens,
-    )
-```
-
-This is the right path for local per-user billing records or quota enforcement. The
-audit log already goes to syslog/JSON; this adds a new event type with no schema change.
-
-**Note:** for Anthropic streaming, `stream_options={"include_usage": True}` may need to
-be added to `api_kwargs` to ensure the usage chunk is emitted.
-
----
+**UI:** Hovering the user label in the header shows last login date, session cost, and
+lifetime cost (pulled from `/session-info` which queries the store; refreshed after each
+turn via a lightweight re-fetch).
 
 ### Option C -- X-Correlation-ID on MCP HTTP calls (cross-layer trace correlation)
 
-Both mcp-ui and mcp-core already log `user_id` independently, so correlating by
-`user_id + timestamp` covers most use cases. For sub-turn granularity (mapping a
-specific mcp-core tool call back to a specific mcp-ui chat turn), generate a
-`correlation_id = str(uuid.uuid4())` at the start of each `run_chat_turn` call and
-pass it as an `X-Correlation-ID` HTTP header on every MCP call via `mcp_client.py`.
-mcp-core would log it when it receives it (see companion entry in mcp-core workplan).
-
----
-
-### Implementation order
-
-1. **Option A** -- one-line addition to `litellm.acompletion()` call; no tests needed.
-2. **Option B** -- ~10 lines; add a test that mocks a streaming response with a usage
-   chunk and asserts `audit_event("llm_usage", ...)` is emitted.
-3. **Option C** -- requires mcp-core work first; implement after Option C lands there.
+Not started. Requires mcp-core work first.
 
 ---
 

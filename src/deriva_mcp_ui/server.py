@@ -205,6 +205,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/session-info")
     async def session_info(session: RequireSession, request: Request):  # type: ignore[misc]
         s: Settings = request.app.state.settings
+        store = request.app.state.store
         cred = session.credenza_session or {}
         client_block = cred.get("client") or {}
         display_name = (
@@ -218,6 +219,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         rag_toggle_available = s.allow_rag_toggle and s.operating_tier in ("llm", "local") and not (s.rag_only_when_anonymous and is_anonymous)
         forced_rag_anon = s.rag_only_when_anonymous and is_anonymous
         rag_mode_active = s.operating_tier == "rag_only" or session.rag_only_override or forced_rag_anon
+        lifetime_cost = await store.get_user_lifetime_cost(session.user_id) if not is_anonymous else None
+        last_login = await store.get_user_last_seen(session.user_id) if not is_anonymous else None
         return JSONResponse(
             {
                 "user_id": session.user_id,
@@ -236,6 +239,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "code_theme": s.code_theme,
                 "show_response_cards": s.show_response_cards,
                 "chat_align_left": s.chat_align_left,
+                "session_cost_usd": session.session_cost_usd if session.session_cost_usd else None,
+                "lifetime_cost_usd": lifetime_cost if lifetime_cost else None,
+                "last_login": last_login,
             }
         )
 
@@ -323,6 +329,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         cancelled = asyncio.Event()
 
         async def _event_stream():
+            cost_before = session.session_cost_usd
+            prompt_tokens_before = session.session_prompt_tokens
+            completion_tokens_before = session.session_completion_tokens
+            cache_read_before = session.session_cache_read_tokens
+            cache_creation_before = session.session_cache_creation_tokens
             try:
                 async for event in run_chat_turn(body.message, session, s, cancelled=cancelled):
                     # Check if client disconnected between yields
@@ -362,6 +373,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             finally:
                 # Persist updated session (history + cached tools) keyed by stable user_id
                 await store.set(user_session_key(session.user_id), session)
+                # Durably accumulate per-user lifetime LLM spend and token counts.
+                turn_cost = session.session_cost_usd - cost_before
+                if turn_cost > 0:
+                    await store.increment_user_cost(
+                        session.user_id,
+                        turn_cost,
+                        prompt_tokens=session.session_prompt_tokens - prompt_tokens_before,
+                        completion_tokens=session.session_completion_tokens - completion_tokens_before,
+                        cache_read_tokens=session.session_cache_read_tokens - cache_read_before,
+                        cache_creation_tokens=session.session_cache_creation_tokens - cache_creation_before,
+                    )
+                # Keep the user identity table current for authenticated users.
+                if session.bearer_token is not None:
+                    cred = session.credenza_session or {}
+                    client_block = cred.get("client") or {}
+                    _email = cred.get("email") or client_block.get("email") or ""
+                    _full_name = cred.get("full_name") or client_block.get("full_name") or ""
+                    await store.upsert_user_identity(session.user_id, _email, _full_name)
                 # Persist full (untrimmed) history with longer TTL so it survives session expiry
                 full = getattr(session, "full_history", session.history)
                 hist_session = Session(user_id=session.user_id, history=full, input_history=session.input_history)
