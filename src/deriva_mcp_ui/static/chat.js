@@ -111,10 +111,10 @@
       }));
     }
     if (info.session_cost_usd != null) {
-      lines.push("Usage (this session): $" + info.session_cost_usd.toFixed(4));
+      lines.push("Session usage: $" + info.session_cost_usd.toFixed(4));
     }
     if (info.lifetime_cost_usd != null) {
-      lines.push("Usage (lifetime): $" + info.lifetime_cost_usd.toFixed(4));
+      lines.push("Lifetime usage: $" + info.lifetime_cost_usd.toFixed(4));
     }
     userLabel.title = lines.join("\n");
   }
