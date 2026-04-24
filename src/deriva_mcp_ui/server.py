@@ -239,6 +239,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "code_theme": s.code_theme,
                 "show_response_cards": s.show_response_cards,
                 "chat_align_left": s.chat_align_left,
+                "turn_count": session.turn_count,
                 "session_cost_usd": session.session_cost_usd if session.session_cost_usd else None,
                 "lifetime_cost_usd": lifetime_cost if lifetime_cost else None,
                 "last_login": last_login,
@@ -324,6 +325,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if len(session.input_history) > 200:
                 session.input_history = session.input_history[-200:]
 
+        session.turn_count += 1
         audit_event("chat_request", user_id=session.user_id, msg_len=len(body.message))
         t0 = time.monotonic()
         cancelled = asyncio.Event()
@@ -334,6 +336,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             completion_tokens_before = session.session_completion_tokens
             cache_read_before = session.session_cache_read_tokens
             cache_creation_before = session.session_cache_creation_tokens
+            _turn_summary_emitted = False
+            _turn_error: str | None = None
             try:
                 async for event in run_chat_turn(body.message, session, s, cancelled=cancelled):
                     # Check if client disconnected between yields
@@ -346,6 +350,39 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         yield f"data: {json.dumps(event['content'])}\n\n"
                     elif event_type == "status":
                         yield f"event: status\ndata: {json.dumps(event)}\n\n"
+                    elif event_type == "turn_summary":
+                        # Consumed here; not forwarded to the SSE client.
+                        _turn_summary_emitted = True
+                        latency_ms = round((time.monotonic() - t0) * 1000)
+                        turn_cost = session.session_cost_usd - cost_before
+                        diag_fields: dict[str, object] = {
+                            k: event[k] for k in (
+                                "user_query", "response_text", "response_compressed",
+                                "tool_inputs", "tool_outputs"
+                            ) if k in event
+                        }
+                        if s.audit_diagnostic:
+                            # Lifetime cost = durable total before this turn + this turn's delta.
+                            # Avoids a DB round-trip while still giving the post-turn running total.
+                            prior_lifetime = await store.get_user_lifetime_cost(session.user_id)
+                            diag_fields["lifetime_cost_usd"] = round(
+                                prior_lifetime + (turn_cost if turn_cost > 0 else 0.0), 6
+                            )
+                        audit_event(
+                            "chat_turn",
+                            session_id=session.session_id,
+                            user_id=session.user_id,
+                            turn=session.turn_count,
+                            tools_invoked=event.get("tools_invoked", []),
+                            rag_triggered=event.get("rag_triggered", False),
+                            rag_document_count=event.get("rag_document_count", 0),
+                            rag_documents=event.get("rag_documents", []),
+                            rag_scores=event.get("rag_scores", []),
+                            response_latency_ms=latency_ms,
+                            cost_usd=round(turn_cost, 6) if turn_cost > 0 else 0.0,
+                            model=event.get("model"),
+                            **diag_fields,
+                        )
                     else:
                         yield f"event: tool\ndata: {json.dumps(event)}\n\n"
                 if not cancelled.is_set():
@@ -359,6 +396,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 audit_event("chat_cancelled", user_id=session.user_id,
                             duration_ms=round((time.monotonic() - t0) * 1000))
             except MCPAuthError:
+                _turn_error = "MCPAuthError"
                 audit_event("chat_error", user_id=session.user_id, error_type="MCPAuthError")
                 if session.bearer_token is None:
                     detail = "Login required -- please log in to use this feature"
@@ -366,6 +404,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     detail = "Session expired -- please log in again"
                 yield f"event: error\ndata: {json.dumps({'error': 'auth', 'detail': detail})}\n\n"
             except Exception as exc:
+                _turn_error = f"{type(exc).__name__}: {exc}"
                 audit_event(
                     "chat_error",
                     user_id=session.user_id,
@@ -375,6 +414,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 logger.exception("Chat error for user %s", session.user_id)
                 yield f"event: error\ndata: {json.dumps({'error': 'internal', 'detail': str(exc)})}\n\n"
             finally:
+                # If the turn was cut short by an error before turn_summary was
+                # yielded, emit a minimal chat_turn record so every request has one.
+                if not _turn_summary_emitted and _turn_error is not None:
+                    audit_event(
+                        "chat_turn",
+                        session_id=session.session_id,
+                        user_id=session.user_id,
+                        tools_invoked=[],
+                        rag_triggered=False,
+                        rag_document_count=0,
+                        rag_documents=[],
+                        rag_scores=[],
+                        response_latency_ms=round((time.monotonic() - t0) * 1000),
+                        cost_usd=0.0,
+                        model=s.llm_model,
+                        error=_turn_error,
+                    )
                 # Persist updated session (history + cached tools) keyed by stable user_id
                 await store.set(user_session_key(session.user_id), session)
                 # Durably accumulate per-user lifetime LLM spend and token counts.
@@ -436,7 +492,7 @@ def main() -> None:  # pragma: no cover
     _init_logging(debug=settings.debug, app_use_syslog=settings.app_use_syslog)
     _init_access_logging(settings)
 
-    init_audit_logger(use_syslog=settings.access_use_syslog)
+    init_audit_logger(use_syslog=settings.audit_use_syslog)
     app = create_app(settings)
     uvicorn.run(
         app,

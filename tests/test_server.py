@@ -434,6 +434,33 @@ def test_rag_only_when_anonymous_blocks_toggle():
     assert resp.json()["rag_mode_active"] is True  # forced, cannot be cleared
 
 
+def test_session_info_includes_turn_count():
+    """turn_count is present in session-info and reflects the session's turn counter."""
+    settings = _test_settings()
+    app = create_app(settings)
+    app.state.store = MemorySessionStore(ttl=settings.session_ttl)
+    now = time.time()
+    session = Session(user_id="alice", bearer_token="tok", created_at=now, last_active=now)
+    session.turn_count = 7
+    app.dependency_overrides[require_session] = lambda: session
+
+    data = TestClient(app).get("/session-info").json()
+    assert data["turn_count"] == 7
+
+
+def test_session_info_turn_count_zero_for_new_session():
+    """turn_count is 0 for a brand-new session."""
+    settings = _test_settings()
+    app = create_app(settings)
+    app.state.store = MemorySessionStore(ttl=settings.session_ttl)
+    now = time.time()
+    session = Session(user_id="bob", bearer_token="tok", created_at=now, last_active=now)
+    app.dependency_overrides[require_session] = lambda: session
+
+    data = TestClient(app).get("/session-info").json()
+    assert data["turn_count"] == 0
+
+
 # ---------------------------------------------------------------------------
 # /history -- GET and DELETE
 # ---------------------------------------------------------------------------

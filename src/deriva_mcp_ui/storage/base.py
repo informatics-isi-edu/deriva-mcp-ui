@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -12,6 +13,9 @@ class Session:
     """Server-side session state for one authenticated user."""
 
     user_id: str
+    # Stable identifier for this conversation session, used in audit logs.
+    # Generated once at session creation and persisted.
+    session_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     bearer_token: str | None = None
     # Full Credenza /session response dict -- source of truth for display name,
     # email, groups, and any other identity fields the UI may need.
@@ -33,6 +37,8 @@ class Session:
     # Per-session RAG-only override: when True, bypass LLM even if the server
     # is configured for LLM tier.
     rag_only_override: bool = False
+    # Number of chat turns completed in this session.
+    turn_count: int = 0
     # Approximate LLM spend and token counts accumulated during this session.
     # Reset when the session expires; use the store's lifetime totals for durable history.
     session_cost_usd: float = 0.0
@@ -45,6 +51,7 @@ class Session:
         return json.dumps(
             {
                 "user_id": self.user_id,
+                "session_id": self.session_id,
                 "bearer_token": self.bearer_token,
                 "credenza_session": self.credenza_session,
                 "history": self.history,
@@ -59,6 +66,7 @@ class Session:
                 "primed_guides": self.primed_guides,
                 "primed_ermrest": self.primed_ermrest,
                 "rag_only_override": self.rag_only_override,
+                "turn_count": self.turn_count,
                 "session_cost_usd": self.session_cost_usd,
                 "session_prompt_tokens": self.session_prompt_tokens,
                 "session_completion_tokens": self.session_completion_tokens,
@@ -72,6 +80,7 @@ class Session:
         d = json.loads(data)
         return cls(
             user_id=d["user_id"],
+            session_id=d.get("session_id", str(uuid.uuid4())),
             bearer_token=d["bearer_token"],
             credenza_session=d.get("credenza_session", {}),
             history=d.get("history", []),
@@ -86,6 +95,7 @@ class Session:
             primed_guides=d.get("primed_guides", ""),
             primed_ermrest=d.get("primed_ermrest", ""),
             rag_only_override=d.get("rag_only_override", False),
+            turn_count=d.get("turn_count", 0),
             session_cost_usd=d.get("session_cost_usd", 0.0),
             session_prompt_tokens=d.get("session_prompt_tokens", 0),
             session_completion_tokens=d.get("session_completion_tokens", 0),

@@ -95,10 +95,29 @@ class Settings(BaseSettings):
     storage_backend_url: str = ""
     debug: bool = False
 
+    # Diagnostic audit mode: when True, per-turn chat_turn audit events include
+    # user_query, response_text, tool_inputs, and tool_outputs.  Off by default
+    # because these fields contain user-supplied content.
+    audit_diagnostic: bool = False
+    # Maximum chars for response_text in diagnostic mode (0 = no truncation).
+    audit_diagnostic_response_max_chars: int = 0
+    # Maximum chars per tool result in diagnostic mode (0 = no truncation).
+    # Default 500 keeps log volume reasonable while still showing useful context.
+    audit_diagnostic_tool_output_max_chars: int = 500
+
     # App syslog: enable for non-Docker deployments where syslog is the
     # only path to a centralized collector.  Leave False under Docker
     # (compose driver: syslog already forwards stderr).
     app_use_syslog: bool = False
+
+    # Audit syslog: route the structured JSON audit log (chat_turn, login_*,
+    # etc.) to /dev/log on LOCAL1 with ident "deriva-mcp-ui-audit:" so it
+    # lands in a separate syslog stream from the app log.  In Docker, enable
+    # this independently of app_use_syslog -- the audit log benefits from a
+    # dedicated ident even when the app log goes via the compose syslog driver.
+    # Note: diagnostic-mode events can exceed rsyslog's default 8 KB message
+    # limit; raise $MaxMessageSize in rsyslog.conf if events are being truncated.
+    audit_use_syslog: bool = False
 
     # Access logging (uvicorn request log)
     access_logfile_path: str = "deriva-mcp-ui-access.log"

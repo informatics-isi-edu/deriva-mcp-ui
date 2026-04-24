@@ -11,7 +11,11 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi.testclient import TestClient
 
+from deriva_mcp_ui.auth import _token_key, require_session, user_session_key
+from deriva_mcp_ui.server import create_app
+from deriva_mcp_ui.storage.memory import MemorySessionStore
 from deriva_mcp_ui.chat import (
     ChatCancelled,
     _extract_key_terms,
@@ -268,6 +272,20 @@ def test_trim_history_empty():
 
 
 # ---------------------------------------------------------------------------
+# Fixture: app + store (used by server-layer chat_turn audit tests below)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def app_and_store():
+    settings = _settings()
+    app = create_app(settings)
+    store = MemorySessionStore(ttl=settings.session_ttl)
+    app.state.store = store
+    return app, store
+
+
+# ---------------------------------------------------------------------------
 # run_chat_turn -- simple end_turn (no tools)
 # ---------------------------------------------------------------------------
 
@@ -514,6 +532,306 @@ async def test_run_chat_turn_tool_error_continues():
                 chunks.append(chunk)
 
     assert "Recovered" in _collect_text(chunks)
+
+
+# ---------------------------------------------------------------------------
+# run_chat_turn -- turn_summary event
+# ---------------------------------------------------------------------------
+
+
+async def test_run_chat_turn_yields_turn_summary_event():
+    """run_chat_turn yields a turn_summary event as its final event."""
+    s = _settings()
+    sess = _session()
+    sess.tools = [_openai_tool("get_entities")]
+
+    with patch("deriva_mcp_ui.chat.litellm") as mock_litellm:
+        mock_litellm.acompletion = AsyncMock(return_value=_text_stream(["Hello"]))
+        mock_litellm.RateLimitError = litellm_rate_limit_error()
+        mock_litellm.ServiceUnavailableError = litellm_service_unavailable_error()
+
+        events = []
+        async for event in run_chat_turn("hi", sess, s):
+            events.append(event)
+
+    summary = next((e for e in events if e.get("type") == "turn_summary"), None)
+    assert summary is not None
+    assert summary["tools_invoked"] == []
+    assert summary["rag_triggered"] is False
+    assert summary["rag_document_count"] == 0
+    assert summary["rag_documents"] == []
+    assert summary["rag_scores"] == []
+    assert summary["model"] == "claude-sonnet-4-6"
+    # Diagnostic fields absent when audit_diagnostic is off
+    assert "user_query" not in summary
+    assert "response_text" not in summary
+    assert "tool_inputs" not in summary
+    assert "tool_outputs" not in summary
+
+
+async def test_run_chat_turn_turn_summary_includes_tools_invoked():
+    """tools_invoked lists each MCP tool called during the turn."""
+    s = _settings()
+    sess = _session()
+    sess.tools = [_openai_tool("get_entities")]
+
+    tc_args = json.dumps({})
+    call_count = 0
+
+    async def _acompletion_side_effect(**_kw):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return _tool_call_stream([{"id": "tid", "name": "get_entities", "arguments": tc_args}])
+        return _text_stream(["Done"])
+
+    with patch("deriva_mcp_ui.chat.call_tool", AsyncMock(return_value="[]")):
+        with patch("deriva_mcp_ui.chat.litellm") as mock_litellm:
+            mock_litellm.acompletion = AsyncMock(side_effect=_acompletion_side_effect)
+            mock_litellm.RateLimitError = litellm_rate_limit_error()
+            mock_litellm.ServiceUnavailableError = litellm_service_unavailable_error()
+
+            events = []
+            async for event in run_chat_turn("hi", sess, s):
+                events.append(event)
+
+    summary = next(e for e in events if e.get("type") == "turn_summary")
+    assert "get_entities" in summary["tools_invoked"]
+
+
+async def test_run_chat_turn_turn_summary_diagnostic_fields():
+    """Diagnostic fields are included in turn_summary when audit_diagnostic=True."""
+    import base64
+    import gzip
+
+    s = _settings(audit_diagnostic=True)
+    sess = _session()
+    sess.tools = [_openai_tool("get_entities")]
+
+    with patch("deriva_mcp_ui.chat.litellm") as mock_litellm:
+        mock_litellm.acompletion = AsyncMock(return_value=_text_stream(["Hello"]))
+        mock_litellm.RateLimitError = litellm_rate_limit_error()
+        mock_litellm.ServiceUnavailableError = litellm_service_unavailable_error()
+
+        events = []
+        async for event in run_chat_turn("my question", sess, s):
+            events.append(event)
+
+    summary = next(e for e in events if e.get("type") == "turn_summary")
+    assert summary["user_query"] == "my question"
+    assert summary["response_text"] == "Hello"
+    assert summary["tool_inputs"] == []
+    assert summary["tool_outputs"] == []
+    # Compressed field must decompress back to the full response.
+    assert "response_compressed" in summary
+    decompressed = gzip.decompress(base64.b64decode(summary["response_compressed"])).decode()
+    assert decompressed == "Hello"
+
+
+async def test_run_chat_turn_turn_summary_diagnostic_tool_detail():
+    """tool_inputs and tool_outputs are populated in diagnostic mode."""
+    s = _settings(audit_diagnostic=True, audit_diagnostic_tool_output_max_chars=10)
+    sess = _session()
+    sess.tools = [_openai_tool("get_entities")]
+
+    tc_args_dict = {"limit": 5}
+    tc_args = json.dumps(tc_args_dict)
+    call_count = 0
+
+    async def _acompletion_side_effect(**_kw):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return _tool_call_stream([{"id": "tid", "name": "get_entities", "arguments": tc_args}])
+        return _text_stream(["Done"])
+
+    with patch("deriva_mcp_ui.chat.call_tool", AsyncMock(return_value="result-data-long")):
+        with patch("deriva_mcp_ui.chat.litellm") as mock_litellm:
+            mock_litellm.acompletion = AsyncMock(side_effect=_acompletion_side_effect)
+            mock_litellm.RateLimitError = litellm_rate_limit_error()
+            mock_litellm.ServiceUnavailableError = litellm_service_unavailable_error()
+
+            events = []
+            async for event in run_chat_turn("hi", sess, s):
+                events.append(event)
+
+    summary = next(e for e in events if e.get("type") == "turn_summary")
+    assert summary["tool_inputs"] == [{"name": "get_entities", "args": tc_args_dict}]
+    # Output truncated to audit_diagnostic_tool_output_max_chars=10
+    assert summary["tool_outputs"] == ["result-dat"]
+
+
+async def test_run_chat_turn_turn_summary_rag_path():
+    """RAG-only path yields turn_summary with rag_triggered=True and document info."""
+    s = _settings(mode="rag_only")
+    sess = _session()
+    rag_result = [{"source": "FaceBase", "url": "https://fb.org/doc", "score": 0.85, "text": "Some text"}]
+
+    with patch("deriva_mcp_ui.chat.call_tool", AsyncMock(return_value=json.dumps(rag_result))):
+        events = []
+        async for event in run_chat_turn("what is facebase?", sess, s):
+            events.append(event)
+
+    summary = next(e for e in events if e.get("type") == "turn_summary")
+    assert summary["rag_triggered"] is True
+    assert summary["rag_document_count"] == 1
+    assert summary["rag_documents"] == ["https://fb.org/doc"]
+    assert abs(summary["rag_scores"][0] - 0.85) < 1e-9
+
+
+async def test_run_chat_turn_turn_summary_not_forwarded_to_sse(app_and_store):
+    """The turn_summary event must not appear in the SSE stream sent to the client."""
+    app, store = app_and_store
+    bearer = "tok-summary"
+    now = time.time()
+    session = Session(user_id="alice", bearer_token=bearer, created_at=now, last_active=now)
+    session.tools = [_openai_tool("get_entities")]
+    session.schema_primed = True
+    await store.set(user_session_key("alice"), session)
+    await store.set(_token_key(bearer), session)
+    app.dependency_overrides[require_session] = lambda: session
+
+    async def _fake_turn(*_args, **_kwargs):
+        yield {"type": "text", "content": "hi"}
+        yield {"type": "turn_summary", "tools_invoked": [], "rag_triggered": False,
+               "rag_document_count": 0, "rag_documents": [], "rag_scores": [], "model": "m"}
+
+    with patch("deriva_mcp_ui.server.run_chat_turn", new=_fake_turn):
+        client = TestClient(app)
+        resp = client.post("/chat", json={"message": "hi"}, cookies={"deriva_chatbot_session": bearer})
+
+    assert "turn_summary" not in resp.text
+
+
+async def test_server_emits_chat_turn_audit_event(app_and_store):
+    """chat_turn audit event is emitted once per turn with the correct fields."""
+    app, store = app_and_store
+    bearer = "tok-audit"
+    now = time.time()
+    session = Session(user_id="alice", bearer_token=bearer, created_at=now, last_active=now)
+    session.schema_primed = True
+    await store.set(user_session_key("alice"), session)
+    await store.set(_token_key(bearer), session)
+    app.dependency_overrides[require_session] = lambda: session
+
+    async def _fake_turn(*_args, **_kwargs):
+        yield {"type": "text", "content": "answer"}
+        yield {"type": "turn_summary", "tools_invoked": ["get_entities"],
+               "rag_triggered": False, "rag_document_count": 0,
+               "rag_documents": [], "rag_scores": [], "model": "claude-sonnet-4-6"}
+
+    with patch("deriva_mcp_ui.server.run_chat_turn", new=_fake_turn):
+        with patch("deriva_mcp_ui.server.audit_event") as mock_audit:
+            client = TestClient(app)
+            client.post("/chat", json={"message": "hi"}, cookies={"deriva_chatbot_session": bearer})
+
+    turn_calls = [c for c in mock_audit.call_args_list if c.args[0] == "chat_turn"]
+    assert len(turn_calls) == 1
+    kw = turn_calls[0].kwargs
+    assert kw["session_id"] == session.session_id
+    assert kw["user_id"] == "alice"
+    assert kw["tools_invoked"] == ["get_entities"]
+    assert kw["rag_triggered"] is False
+    assert kw["model"] == "claude-sonnet-4-6"
+    # "error" key absent on success -- omitting it avoids log shippers
+    # (Loki, Grafana) classifying the record as ERROR on key presence alone.
+    assert "error" not in kw
+    assert "response_latency_ms" in kw
+    assert "cost_usd" in kw
+    # lifetime_cost_usd absent when audit_diagnostic is off (default)
+    assert "lifetime_cost_usd" not in kw
+    # turn counter incremented to 1 for the first turn
+    assert kw["turn"] == 1
+
+
+async def test_server_chat_turn_audit_event_includes_turn_number(app_and_store):
+    """chat_turn audit event includes the current turn counter value."""
+    app, store = app_and_store
+    bearer = "tok-turn-num"
+    now = time.time()
+    session = Session(user_id="alice", bearer_token=bearer, created_at=now, last_active=now)
+    session.schema_primed = True
+    session.turn_count = 4  # simulate a session already 4 turns in
+    await store.set(user_session_key("alice"), session)
+    await store.set(_token_key(bearer), session)
+    app.dependency_overrides[require_session] = lambda: session
+
+    async def _fake_turn(*_args, **_kwargs):
+        yield {"type": "turn_summary", "tools_invoked": [], "rag_triggered": False,
+               "rag_document_count": 0, "rag_documents": [], "rag_scores": [], "model": "m"}
+
+    with patch("deriva_mcp_ui.server.run_chat_turn", new=_fake_turn):
+        with patch("deriva_mcp_ui.server.audit_event") as mock_audit:
+            client = TestClient(app)
+            client.post("/chat", json={"message": "hi"}, cookies={"deriva_chatbot_session": bearer})
+
+    turn_calls = [c for c in mock_audit.call_args_list if c.args[0] == "chat_turn"]
+    assert len(turn_calls) == 1
+    kw = turn_calls[0].kwargs
+    # turn_count incremented from 4 to 5 before the event is emitted
+    assert kw["turn"] == 5
+
+
+async def test_server_chat_turn_diagnostic_includes_lifetime_cost(app_and_store):
+    """lifetime_cost_usd is included in chat_turn when audit_diagnostic=True."""
+    app, store = app_and_store
+    # Pre-seed a lifetime cost for the user.
+    await store.increment_user_cost("alice", 0.05)
+    bearer = "tok-diag-cost"
+    now = time.time()
+    session = Session(user_id="alice", bearer_token=bearer, created_at=now, last_active=now)
+    session.schema_primed = True
+    await store.set(user_session_key("alice"), session)
+    await store.set(_token_key(bearer), session)
+    app.dependency_overrides[require_session] = lambda: session
+
+    async def _fake_turn(*_args, **_kwargs):
+        # Simulate a turn that costs $0.01 by incrementing the session counter.
+        session.session_cost_usd += 0.01
+        yield {"type": "turn_summary", "tools_invoked": [], "rag_triggered": False,
+               "rag_document_count": 0, "rag_documents": [], "rag_scores": [], "model": "m",
+               "user_query": "q", "response_text": "r", "tool_inputs": [], "tool_outputs": []}
+
+    settings = _settings(audit_diagnostic=True)
+    app.state.settings = settings
+
+    with patch("deriva_mcp_ui.server.run_chat_turn", new=_fake_turn):
+        with patch("deriva_mcp_ui.server.audit_event") as mock_audit:
+            client = TestClient(app)
+            client.post("/chat", json={"message": "q"}, cookies={"deriva_chatbot_session": bearer})
+
+    turn_calls = [c for c in mock_audit.call_args_list if c.args[0] == "chat_turn"]
+    assert len(turn_calls) == 1
+    kw = turn_calls[0].kwargs
+    assert "lifetime_cost_usd" in kw
+    # Prior lifetime (0.05) + turn cost (0.01) = 0.06
+    assert abs(kw["lifetime_cost_usd"] - 0.06) < 1e-6
+
+
+async def test_server_emits_chat_turn_on_error(app_and_store):
+    """chat_turn audit event is emitted even when the turn raises an exception."""
+    app, store = app_and_store
+    bearer = "tok-err-audit"
+    now = time.time()
+    session = Session(user_id="alice", bearer_token=bearer, created_at=now, last_active=now)
+    await store.set(user_session_key("alice"), session)
+    await store.set(_token_key(bearer), session)
+    app.dependency_overrides[require_session] = lambda: session
+
+    async def _raise_error(*_args, **_kwargs):
+        raise RuntimeError("boom")
+        yield  # make it an async generator
+
+    with patch("deriva_mcp_ui.server.run_chat_turn", new=_raise_error):
+        with patch("deriva_mcp_ui.server.audit_event") as mock_audit:
+            client = TestClient(app)
+            client.post("/chat", json={"message": "hi"}, cookies={"deriva_chatbot_session": bearer})
+
+    turn_calls = [c for c in mock_audit.call_args_list if c.args[0] == "chat_turn"]
+    assert len(turn_calls) == 1
+    kw = turn_calls[0].kwargs
+    assert "RuntimeError" in kw["error"]
+    assert kw["tools_invoked"] == []
 
 
 # ---------------------------------------------------------------------------

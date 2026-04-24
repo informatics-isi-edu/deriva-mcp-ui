@@ -24,6 +24,8 @@ trim_history(messages, max_turns) -> list
 from __future__ import annotations
 
 import asyncio
+import base64
+import gzip
 import json
 import logging
 from collections.abc import AsyncIterator
@@ -707,6 +709,26 @@ async def _rag_only_response(
     response = _format_rag_response(effective_query, rag_results, schema_text, show_all=show_all)
     yield {"type": "text", "content": response}
 
+    # Build per-turn summary for the audit layer.
+    rag_docs = [r.get("url") or r.get("source", "") for r in rag_results]
+    rag_scores = [float(r.get("score", 0)) for r in rag_results]
+    summary: dict[str, Any] = {
+        "tools_invoked": ["rag_search"],
+        "rag_triggered": True,
+        "rag_document_count": len(rag_results),
+        "rag_documents": rag_docs,
+        "rag_scores": rag_scores,
+        "model": None,
+    }
+    if settings.audit_diagnostic:
+        summary["user_query"] = user_message
+        _resp_max = settings.audit_diagnostic_response_max_chars
+        summary["response_text"] = response[:_resp_max] if _resp_max > 0 else response
+        summary["response_compressed"] = base64.b64encode(gzip.compress(response.encode())).decode()
+        summary["tool_inputs"] = [{"name": "rag_search", "args": {"query": effective_query}}]
+        summary["tool_outputs"] = []  # formatted response already captures the substance
+    yield {"type": "turn_summary", **summary}
+
     # Store in history
     messages = list(session.history) + [
         {"role": "user", "content": user_message},
@@ -1231,10 +1253,11 @@ async def run_chat_turn(
     'rag_only', otherwise runs the full LLM tool-calling loop.
 
     Yields:
-      {"type": "status",     "message": str}               -- priming status update
-      {"type": "text",       "content": str}               -- streamed text chunk
-      {"type": "tool_start", "name": str, "input": dict}   -- before each tool call
-      {"type": "tool_end",   "name": str, "result": str}   -- after each tool call
+      {"type": "status",      "message": str}              -- priming status update
+      {"type": "text",        "content": str}              -- streamed text chunk
+      {"type": "tool_start",  "name": str, "input": dict} -- before each tool call
+      {"type": "tool_end",    "name": str, "result": str} -- after each tool call
+      {"type": "turn_summary", ...}                        -- one per turn; consumed by server.py to emit chat_turn audit event; never forwarded to the SSE client
 
     Mutates session.history (appends the completed turn), session.tools
     (caches on first call), and session.schema_primed (set after first-turn
@@ -1333,6 +1356,15 @@ async def run_chat_turn(
     user_label_provider = _user_label(session, include_email=False)  # no email for LLM provider
     prev_tool_names: set[str] = set()  # tools called in the previous loop iteration
 
+    # Accumulators for the per-turn audit summary.
+    _audit_tools_invoked: list[str] = []
+    _audit_tool_inputs: list[dict[str, Any]] = []
+    _audit_tool_outputs: list[str] = []
+    _audit_rag_triggered = False
+    _audit_rag_docs: list[str] = []
+    _audit_rag_scores: list[float] = []
+    _audit_response_parts: list[str] = []
+
     while True:
         _check_cancelled()
 
@@ -1372,6 +1404,8 @@ async def run_chat_turn(
                         text_yielded = True
                         yield {"type": "text", "content": delta.content}
                         response_content += delta.content
+                        if settings.audit_diagnostic:
+                            _audit_response_parts.append(delta.content)
                     if hasattr(delta, "tool_calls") and delta.tool_calls:
                         _accumulate_tool_call_deltas(tool_call_acc, delta.tool_calls)
                 if captured_usage:
@@ -1467,6 +1501,7 @@ async def run_chat_turn(
 
             _check_cancelled()
             yield {"type": "tool_start", "name": tc_name, "input": tc_args}
+            _audit_tools_invoked.append(tc_name)
             try:
                 result_text = await call_tool(
                     session.bearer_token, tc_name, tc_args, mcp_url, ssl_verify=settings.ssl_verify
@@ -1477,6 +1512,19 @@ async def run_chat_turn(
                 logger.error("Tool %s failed: %s", tc_name, exc)
                 result_text = f"Error executing tool {tc_name}: {exc}"
             yield {"type": "tool_end", "name": tc_name, "result": result_text[:_TOOL_RESULT_PREVIEW]}
+            if tc_name == "rag_search":
+                _audit_rag_triggered = True
+                try:
+                    _rag_hits: list[dict[str, Any]] = json.loads(result_text)
+                    for _hit in _rag_hits:
+                        _audit_rag_docs.append(_hit.get("url") or _hit.get("source", ""))
+                        _audit_rag_scores.append(float(_hit.get("score", 0)))
+                except Exception:
+                    pass  # best-effort; malformed result leaves accumulators as-is
+            if settings.audit_diagnostic:
+                _audit_tool_inputs.append({"name": tc_name, "args": tc_args})
+                _out_max = settings.audit_diagnostic_tool_output_max_chars
+                _audit_tool_outputs.append(result_text[:_out_max] if _out_max > 0 else result_text)
 
             llm_content = result_text[:_TOOL_RESULT_TO_LLM]
             if len(result_text) > _TOOL_RESULT_TO_LLM:
@@ -1485,6 +1533,25 @@ async def run_chat_turn(
 
     truncated = _truncate_history_tool_results(messages)
     session.history = trim_history(truncated, settings.max_history_turns)
+
+    # Yield the per-turn audit summary for the server layer to emit.
+    summary: dict[str, Any] = {
+        "tools_invoked": _audit_tools_invoked,
+        "rag_triggered": _audit_rag_triggered,
+        "rag_document_count": len(_audit_rag_docs),
+        "rag_documents": _audit_rag_docs,
+        "rag_scores": _audit_rag_scores,
+        "model": model,
+    }
+    if settings.audit_diagnostic:
+        _resp_max = settings.audit_diagnostic_response_max_chars
+        full_response = "".join(_audit_response_parts)
+        summary["user_query"] = user_message
+        summary["response_text"] = full_response[:_resp_max] if _resp_max > 0 else full_response
+        summary["response_compressed"] = base64.b64encode(gzip.compress(full_response.encode())).decode()
+        summary["tool_inputs"] = _audit_tool_inputs
+        summary["tool_outputs"] = _audit_tool_outputs
+    yield {"type": "turn_summary", **summary}
 
 
 # ---------------------------------------------------------------------------
