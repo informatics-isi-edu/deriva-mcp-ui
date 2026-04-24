@@ -226,23 +226,13 @@ def system_prompt(
         "This rule should apply whenever the catalog context (hostname + catalog_id) is known."
     )
     rules.append(
-        "8. INLINE IMAGE DISPLAY. When you retrieve image file URLs from the catalog"
-        "(from thumbnail, file, or preview tables), render them inline using"
-        "Markdown image syntax: ![alt-text](url). Do not just provide links—display"
-        "the images so the user can see them directly in the response."
-        "You should look for tables with names like 'thumbnails' or 'previews' and prioritize the display of those"
-        " before other file tables. Prioritize lookups on thumbnail tables first."
-        "IMPORTANT: if the returned URL does not contain a scheme/host/port prepend the scheme/host/port of the catalog"
-        "the results were returned from."
-    )
-    rules.append(
         "TOOL SELECTION PRIORITY:"
         "When the user asks a question, follow this priority order:"
         "a) DEFINITION / EXPLANATION QUESTIONS → Use your knowledge"
         "Examples: 'what is craniosynostosis', 'explain ERMrest', 'how does premature suture fusion work', "
         "'what is a foreign key' -- Feel free to augment your knowledge with rag_search, if the question looks like it"
         "might generate a hit in the known rag sources."
-        "b) CATALOG-SPECIFIC DATA QUESTIONS → STOP. IMPORTANT: rag_search first !"
+        "b) CATALOG-SPECIFIC DATA QUESTIONS → STOP. IMPORTANT: use rag_search first!"
         "Examples: 'what datasets exist for x', 'show me y datasets', 'what research projects study z'"
         "Use rag_search to discover what data exists, THEN follow up with query_attribute or get_entities if you need "
         "specific records."
@@ -267,6 +257,20 @@ def system_prompt(
         "The schema is already loaded in the system prompt. You have all table names, columns, and foreign key "
         "relationships. Proceed directly to writing queries—do not make schema-fetching calls (get_schema, get_table, "
         "list_schemas, etc.)."
+    )
+    rules.append(
+        "8. ERMREST FILTER SYNTAX -- USE any()/all() NOT regexp FOR KNOWN VALUE SETS. "
+        "When filtering a column by a known set of exact values (RIDs, accession numbers, "
+        "etc.), always use the set-membership syntax: "
+        "column=any(val1,val2,val3) matches rows where the column equals ANY of the values (OR); "
+        "column=all(val1,val2,val3) matches rows where a multi-value column contains ALL of the values (AND). "
+        "NEVER use ::regexp:: or ::ciregexp:: to match a fixed list of known values -- "
+        "it is slower, harder to read, and signals a misunderstanding of the query language. "
+        "Only use ::regexp:: or ::ciregexp:: when you genuinely need pattern matching: partial "
+        "string matches, wildcards, case-insensitive search, or structural patterns you cannot "
+        "express as an exact value set. "
+        "CORRECT: dataset=any(VNE,VMJ,TTA,VKR) "
+        "WRONG:   dataset::regexp::^(VNE|VMJ|TTA|VKR)$"
     )
     base += "\n".join(rules)
 
