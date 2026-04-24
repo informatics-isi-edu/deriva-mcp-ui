@@ -224,6 +224,12 @@ def system_prompt(
         "   *Optional: one-sentence summary of the record*"
         ""
         "This rule should apply whenever the catalog context (hostname + catalog_id) is known."
+        "\n**RULE 7C: ALWAYS HYPERLINK RIDS IN PROSE.** Any time a RID appears anywhere in your "
+        "response -- inline in a sentence, in a caption, in a heading, or in a list item -- it "
+        "MUST be a clickable Markdown hyperlink to the Chaise record URL. There is NO exception "
+        "for prose context. If you write 'Dataset VBT' or 'RID=VBT' in running text, it must be "
+        "formatted as [VBT](https://hostname/chaise/record/#catalog_id/schema:table/RID=VBT). "
+        "A bare unlinked RID is always wrong when the catalog context is known."
     )
     rules.append(
         "TOOL SELECTION PRIORITY:"
