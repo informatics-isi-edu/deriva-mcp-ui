@@ -96,6 +96,20 @@ def _init_logging(debug: bool = False, app_use_syslog: bool = False) -> None:  #
     access_log.setLevel(logging.INFO)
 
 
+class _HealthCheckThrottle(logging.Filter):  # pragma: no cover
+    _interval = 600.0
+    _last_logged: float = 0.0
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if "/health" not in record.getMessage():
+            return True
+        now = time.monotonic()
+        if now - self.__class__._last_logged >= self.__class__._interval:
+            self.__class__._last_logged = now
+            return True
+        return False
+
+
 def _init_access_logging(settings: Settings) -> None:  # pragma: no cover
     """Route uvicorn access logs to syslog (LOCAL2) or stderr.
 
@@ -108,6 +122,7 @@ def _init_access_logging(settings: Settings) -> None:  # pragma: no cover
     from logging.handlers import SysLogHandler
 
     access_log = logging.getLogger("uvicorn.access")
+    access_log.addFilter(_HealthCheckThrottle())
 
     if settings.access_use_syslog:
         syslog_socket = "/dev/log"
