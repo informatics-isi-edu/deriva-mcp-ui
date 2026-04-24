@@ -119,8 +119,7 @@ class Settings(BaseSettings):
     # limit; raise $MaxMessageSize in rsyslog.conf if events are being truncated.
     audit_use_syslog: bool = False
 
-    # Access logging (uvicorn request log)
-    access_logfile_path: str = "deriva-mcp-ui-access.log"
+    # Access logging (uvicorn request log): syslog LOCAL2 or stderr fallback
     access_use_syslog: bool = False
 
     def remap_url(self, url: str) -> str:

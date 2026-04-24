@@ -313,7 +313,7 @@ async def test_run_chat_turn_no_tools_yields_text():
     assert sess.history[1]["role"] == "assistant"
 
 
-async def test_run_chat_turn_emits_llm_usage_audit_event():
+async def test_run_chat_turn_emits_llm_api_call_audit_event():
     s = _settings()
     sess = _session()
     sess.credenza_session = {"full_name": "Alice Smith", "email": "alice@example.org"}
@@ -333,9 +333,11 @@ async def test_run_chat_turn_emits_llm_usage_audit_event():
             async for _ in run_chat_turn("hi", sess, s):
                 pass
 
-    usage_calls = [c for c in mock_audit.call_args_list if c.args[0] == "llm_usage"]
+    usage_calls = [c for c in mock_audit.call_args_list if c.args[0] == "llm_api_call"]
     assert len(usage_calls) == 1
     kw = usage_calls[0].kwargs
+    assert kw["session_id"] == sess.session_id
+    assert kw["turn"] == sess.turn_count
     assert kw["user_id"] == "Alice Smith <alice@example.org> (alice)"
     assert kw["model"] == "claude-sonnet-4-6"
     assert kw["prompt_tokens"] == 120
@@ -374,7 +376,7 @@ async def test_run_chat_turn_passes_cache_tokens_to_cost_per_token():
     assert cost_kwargs["cache_read_input_tokens"] == 900
     assert cost_kwargs["cache_creation_input_tokens"] == 0
 
-    kw = [c for c in mock_audit.call_args_list if c.args[0] == "llm_usage"][0].kwargs
+    kw = [c for c in mock_audit.call_args_list if c.args[0] == "llm_api_call"][0].kwargs
     assert kw["cache_read_input_tokens"] == 900
     assert kw["cache_creation_input_tokens"] == 0
 

@@ -97,6 +97,18 @@ async def _connect(mcp_url: str, bearer_token: str | None, *, ssl_verify: bool =
         raise MCPConnectionError(f"MCP server error {exc.response.status_code}: {exc}") from exc
     except (httpx.ConnectError, httpx.TimeoutException, OSError) as exc:
         raise MCPConnectionError(f"Cannot reach MCP server at {mcp_url}: {exc}") from exc
+    except BaseExceptionGroup as exc:
+        # streamablehttp_client uses asyncio.TaskGroup internally; a 401 from the
+        # MCP server surfaces as an ExceptionGroup wrapping httpx.HTTPStatusError
+        # rather than a bare HTTPStatusError.  Unwrap and re-classify.
+        http_errs = [e for e in exc.exceptions if isinstance(e, httpx.HTTPStatusError)]
+        if http_errs and http_errs[0].response.status_code == 401:
+            raise MCPAuthError(f"MCP server rejected token: {http_errs[0]}") from exc
+        connect_errs = [e for e in exc.exceptions
+                        if isinstance(e, (httpx.ConnectError, httpx.TimeoutException, OSError))]
+        if connect_errs:
+            raise MCPConnectionError(f"Cannot reach MCP server at {mcp_url}: {connect_errs[0]}") from exc
+        raise
 
 
 @contextlib.asynccontextmanager

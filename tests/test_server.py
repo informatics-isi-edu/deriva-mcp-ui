@@ -435,7 +435,7 @@ def test_rag_only_when_anonymous_blocks_toggle():
 
 
 def test_session_info_includes_turn_count():
-    """turn_count is present in session-info and reflects the session's turn counter."""
+    """turn_count and session_id are present in session-info."""
     settings = _test_settings()
     app = create_app(settings)
     app.state.store = MemorySessionStore(ttl=settings.session_ttl)
@@ -446,6 +446,7 @@ def test_session_info_includes_turn_count():
 
     data = TestClient(app).get("/session-info").json()
     assert data["turn_count"] == 7
+    assert data["session_id"] == session.session_id
 
 
 def test_session_info_turn_count_zero_for_new_session():
@@ -459,6 +460,84 @@ def test_session_info_turn_count_zero_for_new_session():
 
     data = TestClient(app).get("/session-info").json()
     assert data["turn_count"] == 0
+
+
+# ---------------------------------------------------------------------------
+# /chat -- stale session detection
+# ---------------------------------------------------------------------------
+
+
+def test_chat_session_id_mismatch_returns_401():
+    """POST /chat with a stale session_id returns 401 session_expired."""
+
+    settings = _test_settings()
+    app = create_app(settings)
+    store = MemorySessionStore(ttl=settings.session_ttl)
+    app.state.store = store
+    now = time.time()
+    session = Session(user_id="alice", bearer_token="tok", created_at=now, last_active=now)
+    app.dependency_overrides[require_session] = lambda: session
+
+    resp = TestClient(app).post(
+        "/chat",
+        json={"message": "hi", "session_id": "old-stale-uuid"},
+        cookies={"deriva_chatbot_session": "tok"},
+    )
+    assert resp.status_code == 401
+    body = resp.json()
+    assert body["error"] == "session_expired"
+
+
+def test_chat_matching_session_id_proceeds():
+    """POST /chat with a matching session_id is not rejected."""
+    from unittest.mock import patch
+
+    settings = _test_settings()
+    app = create_app(settings)
+    store = MemorySessionStore(ttl=settings.session_ttl)
+    app.state.store = store
+    now = time.time()
+    session = Session(user_id="alice", bearer_token="tok", created_at=now, last_active=now)
+    session.schema_primed = True
+    app.dependency_overrides[require_session] = lambda: session
+
+    async def _fake_turn(*_args, **_kwargs):
+        yield {"type": "turn_summary", "tools_invoked": [], "rag_triggered": False,
+               "rag_document_count": 0, "rag_documents": [], "rag_scores": [], "model": "m"}
+
+    with patch("deriva_mcp_ui.server.run_chat_turn", new=_fake_turn):
+        resp = TestClient(app).post(
+            "/chat",
+            json={"message": "hi", "session_id": session.session_id},
+            cookies={"deriva_chatbot_session": "tok"},
+        )
+    assert resp.status_code == 200
+
+
+def test_chat_no_session_id_proceeds():
+    """POST /chat without session_id (old clients) is not rejected."""
+    from unittest.mock import patch
+
+    settings = _test_settings()
+    app = create_app(settings)
+    store = MemorySessionStore(ttl=settings.session_ttl)
+    app.state.store = store
+    now = time.time()
+    session = Session(user_id="alice", bearer_token="tok", created_at=now, last_active=now)
+    session.schema_primed = True
+    app.dependency_overrides[require_session] = lambda: session
+
+    async def _fake_turn(*_args, **_kwargs):
+        yield {"type": "turn_summary", "tools_invoked": [], "rag_triggered": False,
+               "rag_document_count": 0, "rag_documents": [], "rag_scores": [], "model": "m"}
+
+    with patch("deriva_mcp_ui.server.run_chat_turn", new=_fake_turn):
+        resp = TestClient(app).post(
+            "/chat",
+            json={"message": "hi"},
+            cookies={"deriva_chatbot_session": "tok"},
+        )
+    assert resp.status_code == 200
 
 
 # ---------------------------------------------------------------------------

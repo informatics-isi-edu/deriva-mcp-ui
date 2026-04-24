@@ -11,6 +11,7 @@ import time
 from urllib.parse import urlparse
 from contextlib import asynccontextmanager
 
+import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -96,23 +97,17 @@ def _init_logging(debug: bool = False, app_use_syslog: bool = False) -> None:  #
 
 
 def _init_access_logging(settings: Settings) -> None:  # pragma: no cover
-    """Route uvicorn access logs to a dedicated file and/or syslog facility.
+    """Route uvicorn access logs to syslog (LOCAL2) or stderr.
 
-    Uses LOG_LOCAL2 for syslog so rsyslog can route access logs separately
-    from the application log (LOG_LOCAL1).
+    Uses LOG_LOCAL2 so rsyslog can route access logs separately from the
+    application log (LOCAL1) and audit log (LOCAL1 with dedicated ident).
+    Falls back to stderr when syslog is unavailable or not requested, so
+    Docker / AWS log drivers capture access lines alongside app output.
     """
     import os
-    from logging.handlers import RotatingFileHandler, SysLogHandler
+    from logging.handlers import SysLogHandler
 
-    fmt = logging.Formatter("%(asctime)s %(message)s")
     access_log = logging.getLogger("uvicorn.access")
-
-    if settings.access_logfile_path:
-        fh = RotatingFileHandler(
-            settings.access_logfile_path, maxBytes=50_000_000, backupCount=5
-        )
-        fh.setFormatter(fmt)
-        access_log.addHandler(fh)
 
     if settings.access_use_syslog:
         syslog_socket = "/dev/log"
@@ -124,14 +119,21 @@ def _init_access_logging(settings: Settings) -> None:  # pragma: no cover
                 sh.ident = "deriva-mcp-ui-access: "
                 sh.setFormatter(logging.Formatter("%(message)s"))
                 access_log.addHandler(sh)
+                return
             except Exception:
                 pass
+
+    # Fallback: stderr (picked up by Docker / AWS log drivers)
+    fh = logging.StreamHandler()
+    fh.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+    access_log.addHandler(fh)
 
 
 class ChatRequest(BaseModel):
     message: str
     hostname: str = ""
     catalog_id: str = ""
+    session_id: str = ""  # client echoes back the session_id it received at page load
 
 
 @asynccontextmanager
@@ -224,6 +226,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return JSONResponse(
             {
                 "user_id": session.user_id,
+                "session_id": session.session_id,
                 "display_name": display_name,
                 "full_name": full_name,
                 "email": email,
@@ -313,6 +316,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 status_code=400,
             )
 
+        # Detect stale sessions: if the client supplied a session_id that does
+        # not match the resolved session, the server-side session has expired
+        # and a new (anonymous) one was issued for this request.  Return a
+        # dedicated error so the frontend can show a proper "session expired"
+        # message rather than silently answering as an anonymous user.
+        if body.session_id and body.session_id != session.session_id:
+            return JSONResponse(
+                {"error": "session_expired", "detail": "Your session has expired. Please log in again."},
+                status_code=401,
+            )
+
         # Update general-purpose catalog context if provided
         if body.hostname:
             session.gp_hostname = body.hostname
@@ -326,7 +340,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 session.input_history = session.input_history[-200:]
 
         session.turn_count += 1
-        audit_event("chat_request", user_id=session.user_id, msg_len=len(body.message))
         t0 = time.monotonic()
         cancelled = asyncio.Event()
 
@@ -355,6 +368,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         _turn_summary_emitted = True
                         latency_ms = round((time.monotonic() - t0) * 1000)
                         turn_cost = session.session_cost_usd - cost_before
+                        turn_prompt_tokens = session.session_prompt_tokens - prompt_tokens_before
+                        turn_completion_tokens = session.session_completion_tokens - completion_tokens_before
+                        turn_cache_read_tokens = session.session_cache_read_tokens - cache_read_before
+                        turn_cache_creation_tokens = session.session_cache_creation_tokens - cache_creation_before
                         diag_fields: dict[str, object] = {
                             k: event[k] for k in (
                                 "user_query", "response_text", "response_compressed",
@@ -380,20 +397,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                             rag_scores=event.get("rag_scores", []),
                             response_latency_ms=latency_ms,
                             cost_usd=round(turn_cost, 6) if turn_cost > 0 else 0.0,
+                            prompt_tokens=turn_prompt_tokens,
+                            completion_tokens=turn_completion_tokens,
+                            cache_read_tokens=turn_cache_read_tokens,
+                            cache_creation_tokens=turn_cache_creation_tokens,
                             model=event.get("model"),
                             **diag_fields,
                         )
                     else:
                         yield f"event: tool\ndata: {json.dumps(event)}\n\n"
-                if not cancelled.is_set():
-                    audit_event(
-                        "chat_complete",
-                        user_id=session.user_id,
-                        duration_ms=round((time.monotonic() - t0) * 1000),
-                    )
             except ChatCancelled:
                 logger.info("Chat cancelled for %s", session.user_id)
-                audit_event("chat_cancelled", user_id=session.user_id,
+                audit_event("chat_cancelled",
+                            session_id=session.session_id,
+                            user_id=session.user_id,
+                            turn=session.turn_count,
                             duration_ms=round((time.monotonic() - t0) * 1000))
             except MCPAuthError:
                 _turn_error = "MCPAuthError"
@@ -403,6 +421,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 else:
                     detail = "Session expired -- please log in again"
                 yield f"event: error\ndata: {json.dumps({'error': 'auth', 'detail': detail})}\n\n"
+            except BaseExceptionGroup as exc:
+                # streamablehttp_client wraps TaskGroup errors; a 401 from MCP
+                # surfaces as an ExceptionGroup rather than a bare MCPAuthError
+                # when _connect's try/except is bypassed by the group boundary.
+                http_errs = [e for e in exc.exceptions if isinstance(e, httpx.HTTPStatusError)]
+                if http_errs and http_errs[0].response.status_code == 401:
+                    _turn_error = "MCPAuthError"
+                    audit_event("chat_error", user_id=session.user_id, error_type="MCPAuthError")
+                    detail = ("Login required -- please log in to use this feature"
+                              if session.bearer_token is None
+                              else "Session expired -- please log in again")
+                    yield f"event: error\ndata: {json.dumps({'error': 'auth', 'detail': detail})}\n\n"
+                else:
+                    _turn_error = f"ExceptionGroup: {exc}"
+                    audit_event("chat_error", user_id=session.user_id,
+                                error_type="ExceptionGroup", detail=str(exc))
+                    logger.exception("Chat ExceptionGroup for user %s", session.user_id)
+                    yield f"event: error\ndata: {json.dumps({'error': 'internal', 'detail': str(exc)})}\n\n"
             except Exception as exc:
                 _turn_error = f"{type(exc).__name__}: {exc}"
                 audit_event(

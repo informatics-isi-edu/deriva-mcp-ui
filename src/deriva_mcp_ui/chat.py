@@ -1429,7 +1429,9 @@ async def run_chat_turn(
                     session.session_cache_read_tokens += cache_read_tokens
                     session.session_cache_creation_tokens += cache_creation_tokens
                     audit_event(
-                        "llm_usage",
+                        "llm_api_call",
+                        session_id=session.session_id,
+                        turn=session.turn_count,
                         user_id=user_label,
                         model=model,
                         prompt_tokens=captured_usage.prompt_tokens,

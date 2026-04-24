@@ -131,6 +131,12 @@
   let busy = false;
   let abortController = null;
 
+  // Stable session identity captured at page load.  Echoed back in every
+  // chat POST so the server can detect when the session has expired and a
+  // new anonymous one was silently issued.
+  let knownSessionId = null;
+  let knownIsAuthenticated = false;  // true when the user was logged in at load time
+
   // Command history -- up/down arrow navigation like a terminal.
   // cmdHistory[0] = oldest, cmdHistory[length-1] = most recent.
   // historyPos = -1 means "at current draft" (not navigating history).
@@ -143,7 +149,6 @@
   // ------------------------------------------------------------------
 
   function showLoggedOutState() {
-    inputArea.style.display = "none";
     userLabel.textContent = "";
     logoutLink.textContent = "Log in";
     logoutLink.href = "login";
@@ -152,6 +157,14 @@
     el.className = "msg msg-assistant";
     el.innerHTML = 'You are not logged in. <a href="login">Log in</a> to continue.';
     thread.appendChild(el);
+  }
+
+  function showSessionExpiredBanner() {
+    const el = document.createElement("div");
+    el.className = "msg msg-error";
+    el.innerHTML = 'Your session has expired. <a href="login">Log in again</a> to continue, or <a href="" onclick="location.reload();return false;">refresh the page</a> to continue in anonymous search-only mode.';
+    thread.appendChild(el);
+    el.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }
 
   // ------------------------------------------------------------------
@@ -169,6 +182,9 @@
       appendError("Could not reach server. Please refresh.");
       return;
     }
+
+    knownSessionId = info.session_id || null;
+    knownIsAuthenticated = !info.login_available && info.display_name !== "Anonymous";
 
     // Apply no-cards mode when show_response_cards is false
     if (!info.show_response_cards) {
@@ -265,6 +281,23 @@
         } catch { /* ignore network errors */ }
       });
     }
+
+    // Detect stale sessions when the user returns to a backgrounded tab.
+    // On visibility restore, re-fetch session-info and compare the session_id.
+    // If it changed (server issued a new anonymous session), show an expiry banner.
+    document.addEventListener("visibilitychange", async function onVisibility() {
+      if (document.visibilityState !== "visible") return;
+      if (!knownIsAuthenticated) return;  // anonymous sessions have nothing to expire
+      try {
+        const r = await fetch("session-info");
+        if (!r.ok) return;
+        const fresh = await r.json();
+        if (fresh.session_id && fresh.session_id !== knownSessionId) {
+          document.removeEventListener("visibilitychange", onVisibility);
+          showSessionExpiredBanner();
+        }
+      } catch { /* non-critical, ignore */ }
+    });
 
     // Load conversation history from previous sessions
     await loadHistory();
@@ -370,6 +403,7 @@
     const assistantEl = appendAssistantPlaceholder();
 
     const body = { message: text };
+    if (knownSessionId) body.session_id = knownSessionId;
     if (catalogBar.style.display !== "none") {
       body.hostname   = gpHostname.value.trim();
       body.catalog_id = gpCatalogId.value.trim();
@@ -389,7 +423,17 @@
         signal: abortController ? abortController.signal : undefined,
       });
 
-      if (resp.status === 401) { assistantEl.remove(); showLoggedOutState(); return; }
+      if (resp.status === 401) {
+        assistantEl.remove();
+        let errBody = null;
+        try { errBody = await resp.json(); } catch { /* ignore */ }
+        if ((errBody && errBody.error === "session_expired") || knownIsAuthenticated) {
+          showSessionExpiredBanner();
+        } else {
+          showLoggedOutState();
+        }
+        return;
+      }
       if (!resp.ok) {
         assistantEl.remove();
         appendError(`Server error ${resp.status}`);
@@ -442,7 +486,11 @@
               assistantEl.remove();
             }
             if (payload.error === "auth") {
-              showLoggedOutState();
+              if (knownIsAuthenticated) {
+                showSessionExpiredBanner();
+              } else {
+                showLoggedOutState();
+              }
             } else {
               appendError(payload.detail || "An error occurred.");
             }
