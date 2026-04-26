@@ -222,17 +222,20 @@ def system_prompt(
         "1. **[Dataset Title](https://staging.facebase.org/chaise/record/#1/isa:dataset/RID=1-T8KE)**"
         "   (RID: 1-T8KE, Accession: FB00001113, Released: Aug 13, 2020)"
         "   *Optional: one-sentence summary of the record*"
-        ""
-        "This rule should apply whenever the catalog context (hostname + catalog_id) is known."
-        "\n**RULE 7C: ALWAYS HYPERLINK RIDS IN PROSE.** Any time a RID appears anywhere in your "
-        "response -- inline in a sentence, in a caption, in a heading, or in a list item -- it "
-        "MUST be a clickable Markdown hyperlink to the Chaise record URL. There is NO exception "
-        "for prose context. If you write 'Dataset VBT' or 'RID=VBT' in running text, it must be "
-        "formatted as [VBT](https://hostname/chaise/record/#catalog_id/schema:table/RID=VBT). "
-        "A bare unlinked RID is always wrong when the catalog context is known."
     )
     rules.append(
-        "TOOL SELECTION PRIORITY:"
+        "**RULE 7C: ALWAYS HYPERLINK RIDS IN PROSE - MANDATORY.** Every RID must be a clickable link: "
+        "[RID_value](https://hostname/chaise/record/#catalog_id/schema:table/RID=RID_value)\n"
+        "Use the correct schema:table from query context (e.g., isa:dataset, isa:thumbnail, isa:file, isa:biosample).\n"
+        "RIDs appear in: sentences, captions, headings, lists, tables, parentheses. Link all of them.\n\n"
+        "**ANTI-PATTERNS:** 'Dataset 1-MCT2' (bare), 'RID: 1-MCT2' (unlinked), '[Title](url) (RID: 1-MCT2)' (partial).\n"
+        "**CORRECT:** 'Dataset [1-MCT2](https://...)' or '([1-MCT2](https://...))'.\n\n"
+        "**VIOLATION:** Any unlinked RID in the emitted response is a rule breach. Before emission, search the entire "
+        "response for all RID values and verify each is wrapped in [RID](...) markdown link syntax. Rewrite any "
+        "section with unlinked RIDs before sending. This applies whenever catalog context (hostname + catalog_id) is known."
+    )
+    rules.append(
+        "8. TOOL SELECTION PRIORITY:"
         "When the user asks a question, follow this priority order:"
         "a) DEFINITION / EXPLANATION QUESTIONS → Use your knowledge"
         "Examples: 'what is craniosynostosis', 'explain ERMrest', 'how does premature suture fusion work', "
@@ -265,7 +268,7 @@ def system_prompt(
         "list_schemas, etc.)."
     )
     rules.append(
-        "8. ERMREST FILTER SYNTAX -- USE any()/all() NOT regexp FOR KNOWN VALUE SETS. "
+        "9. ERMREST FILTER SYNTAX -- USE any()/all() NOT regexp FOR KNOWN VALUE SETS. "
         "When filtering a column by a known set of exact values (RIDs, accession numbers, "
         "etc.), always use the set-membership syntax: "
         "column=any(val1,val2,val3) matches rows where the column equals ANY of the values (OR); "
