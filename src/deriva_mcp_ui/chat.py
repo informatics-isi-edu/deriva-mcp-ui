@@ -165,7 +165,8 @@ def system_prompt(
         "3. Display images inline in your response for visual reference"
         "4. This applies to thumbnails, previews, and any publicly accessible images"
         "5. You should look for tables with names like 'thumbnails' or 'previews' and prioritize the display of those"
-        " before other file tables."
+        " before other file tables. If the user is not specific about what type of images to retrieve, "
+        "ALWAYS PRIORITIZE thumbnails or thumbnail tables as your primary query/search focus."
         "6. IMPORTANT: if the returned URL does not contain a scheme/host/port prepend the scheme/host/port of the catalog"
         "the results were returned from."
     )
