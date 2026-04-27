@@ -231,10 +231,11 @@ def system_prompt(
         "RIDs appear in: sentences, captions, headings, lists, tables, parentheses. Link all of them.\n\n"
         "**ANTI-PATTERNS:** 'Dataset 1-MCT2' (bare), 'RID: 1-MCT2' (unlinked), '[Title](url) (RID: 1-MCT2)' (partial).\n"
         "**CORRECT:** 'Dataset [1-MCT2](https://...)' or '([1-MCT2](https://...))'.\n"
-        "**LINK UNIQUENESS:** Each URL appears at most once per entry. Do not repeat a link reference within the same list item or record block.\n\n"
         "**VIOLATION:** Any unlinked RID in the emitted response is a rule breach. Before emission, search the entire "
-        "response for all RID values and verify each is wrapped in [RID](...) markdown link syntax. Rewrite any "
-        "section with unlinked RIDs before sending. This applies whenever catalog context (hostname + catalog_id) is known."
+        "response for all RID values and verify each is wrapped in [RID](...) markdown link syntax -- EXCEPT where "
+        "that same URL is already linked elsewhere in the same list item or record block (do not duplicate a link "
+        "within the same entry). Rewrite any section with unlinked RIDs before sending. "
+        "This applies whenever catalog context (hostname + catalog_id) is known."
     )
     rules.append(
         "8. TOOL SELECTION PRIORITY:"
