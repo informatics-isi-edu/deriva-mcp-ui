@@ -229,7 +229,7 @@
         link.textContent = label;
         link.target = "_blank";
         link.rel = "noopener";
-        link.style.color = "#a8c4e8";
+        link.style.color = "#5cbbea";
         catalogTitle.appendChild(link);
       } else {
         catalogTitle.textContent += ": " + label;
