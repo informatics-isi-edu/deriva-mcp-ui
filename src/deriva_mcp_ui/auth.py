@@ -229,7 +229,7 @@ async def login(request: Request) -> Response:
         ("response_type", "code"),
         ("client_id", settings.client_id),
         ("redirect_uri", f"{settings.public_url}/callback"),
-        ("scope", "openid"),
+        ("scope", "openid email profile"),
         ("resource", settings.mcp_resource),
         ("resource", _DERIVA_SERVICE_RESOURCE),
         ("state", state),
