@@ -88,7 +88,7 @@ def system_prompt(
     schema_context: str = "",
     guide_context: str = "",
     ermrest_syntax: str = "",
-) -> str:  # noqa: ARG002
+) -> str:
     """Return the system prompt for this session.
 
     schema_context is injected by _prime_schema on the first turn of a
@@ -104,6 +104,18 @@ def system_prompt(
         catalog_id = settings.default_catalog_id
         base = (
             f"You are a DERIVA data assistant for the {label} catalog. "
+            "You have access to tools for querying and managing this catalog. "
+            "When answering questions about data, schema, or annotations, "
+            "use the available tools rather than relying on prior knowledge. "
+            f"For EVERY tool call that accepts hostname and catalog_id parameters, "
+            f"you MUST pass hostname=\"{hostname}\" and catalog_id=\"{catalog_id}\" "
+            f"exactly as written. Never omit these arguments or substitute a different value."
+        )
+    elif session.gp_hostname and session.gp_catalog_id:
+        hostname = session.gp_hostname
+        catalog_id = session.gp_catalog_id
+        base = (
+            f"You are a DERIVA data assistant for catalog {catalog_id} on {hostname}. "
             "You have access to tools for querying and managing this catalog. "
             "When answering questions about data, schema, or annotations, "
             "use the available tools rather than relying on prior knowledge. "
