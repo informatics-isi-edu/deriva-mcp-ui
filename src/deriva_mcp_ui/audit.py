@@ -18,6 +18,7 @@ from __future__ import annotations
 import datetime
 import logging
 import os
+from contextvars import ContextVar
 from logging import StreamHandler
 from logging.handlers import SysLogHandler
 
@@ -25,6 +26,7 @@ from pythonjsonlogger import json as jsonlogger
 
 _logger = logging.getLogger("deriva_mcp_ui.audit")
 _initialized = False
+_client_ip_var: ContextVar[str] = ContextVar("client_ip", default="unknown")
 
 
 def init_audit_logger(use_syslog: bool = False) -> None:
@@ -62,6 +64,11 @@ def init_audit_logger(use_syslog: bool = False) -> None:
     _logger.propagate = False
 
 
+def set_client_ip(ip: str) -> None:
+    """Store the client IP for the current request in the contextvar."""
+    _client_ip_var.set(ip)
+
+
 def audit_event(event: str, **kwargs: object) -> None:
     """Emit a structured JSON audit event.
 
@@ -73,6 +80,7 @@ def audit_event(event: str, **kwargs: object) -> None:
     entry = {
         "event": event,
         "timestamp": datetime.datetime.now().astimezone().isoformat(),
+        "client_ip": _client_ip_var.get(),
         **kwargs,
     }
     _logger.info(entry)

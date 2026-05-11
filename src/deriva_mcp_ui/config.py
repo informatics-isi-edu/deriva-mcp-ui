@@ -105,6 +105,18 @@ class Settings(BaseSettings):
     # Default 500 keeps log volume reasonable while still showing useful context.
     audit_diagnostic_tool_output_max_chars: int = 500
 
+    # Set to True when this service runs behind a reverse proxy (Traefik, nginx,
+    # Apache mod_proxy) that sets X-Forwarded-For.  Enables uvicorn's
+    # ProxyHeadersMiddleware so that request.client reflects the real client IP
+    # in audit logs rather than the proxy's address.
+    #
+    # SECURITY: only enable when the service is network-isolated behind the
+    # proxy so that clients cannot reach it directly and spoof X-Forwarded-For.
+    # In Docker this is enforced by the container network (no host port mapping,
+    # Traefik is the sole ingress).  On bare metal, ensure the service is not
+    # reachable except through the proxy.
+    behind_proxy: bool = False
+
     # App syslog: enable for non-Docker deployments where syslog is the
     # only path to a centralized collector.  Leave False under Docker
     # (compose driver: syslog already forwards stderr).
