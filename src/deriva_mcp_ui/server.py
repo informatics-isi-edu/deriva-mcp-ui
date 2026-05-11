@@ -17,7 +17,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from .audit import audit_event, init_audit_logger
+from .audit import audit_event, init_audit_logger, set_client_ip
 from .auth import (
     ANON_COOKIE_NAME,
     RequireSession,
@@ -204,6 +204,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 max_age=max_age,
             )
         return response
+
+    @app.middleware("http")
+    async def _client_ip_middleware(request: Request, call_next):  # type: ignore[misc]
+        set_client_ip(request.client.host if request.client else "unknown")
+        return await call_next(request)
+
+    if settings.behind_proxy:
+        from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+        app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")  # type: ignore[arg-type]
 
     app.include_router(auth_router)
 
