@@ -1413,6 +1413,135 @@ Not started. Requires mcp-core work first.
 
 ---
 
+---
+
+## Phase 11 -- Chatbot Backend Service Account + Anonymous Mode Removal [PLANNED]
+
+**Status:** Not started. Ships as a single coordinated change across mcp-ui, mcp-core,
+and deriva-docker.
+
+### Motivation
+
+The current anonymous session path in mcp-ui (`Session.bearer_token = None`) calls the
+MCP server with no `Authorization` header. Per RFC 9728 and the MCP authorization
+specification, a resource server that supports OAuth MUST respond to unauthenticated
+requests with `401 Unauthorized` + `WWW-Authenticate: Bearer resource_metadata="..."`.
+`DERIVA_MCP_ALLOW_ANONYMOUS=true` suppresses that challenge, violating the spec, so the
+deriva-docker default has already been set to `false`.
+
+The fix is to replace tokenless anonymous MCP calls with service-account
+`client_credentials` authentication. Once that is done, `DERIVA_MCP_ALLOW_ANONYMOUS`
+and `AnonymousPermitMiddleware` in mcp-core can be removed entirely in the same PR.
+
+### Design
+
+A new confidential Credenza client `deriva-chatbot-backend` is registered with
+`client_credentials` and `token_exchange` grants. The mcp-ui backend maintains a
+module-level cached service token and presents it when calling MCP tools on behalf
+of unauthenticated browser users.
+
+```
+Anonymous browser session
+  -> mcp-ui: no user bearer token
+  -> _get_service_token() in auth.py:
+       cached token present and >60s from expiry? -> use it
+       else: POST {credenza_url}/token
+               grant_type=client_credentials
+               client_id=deriva-chatbot-backend
+               client_secret={DERIVA_CHATBOT_BACKEND_SECRET}
+               resource={DERIVA_MCP_SERVER_RESOURCE}
+             <- service token + expires_in
+             update module-level (token, expires_at)
+  -> Authorization: Bearer <service-token> on all MCP calls
+  -> MCP server: introspects + exchanges service token -> DERIVA credential
+  -> DERIVA returns public data only (service account has no special ACLs)
+```
+
+Authenticated user sessions are unchanged: the user's bearer token is used directly.
+
+### mcp-ui changes
+
+**`auth.py`** -- add a service token cache and exchange helper:
+
+```python
+_svc_token: str | None = None
+_svc_token_expires_at: float = 0.0
+_svc_token_lock = asyncio.Lock()
+
+async def _get_service_token(settings: Settings) -> str:
+    global _svc_token, _svc_token_expires_at
+    async with _svc_token_lock:
+        if _svc_token and time.time() < _svc_token_expires_at - 60:
+            return _svc_token
+        resp = await _http.post(
+            f"{settings.credenza_url}/token",
+            data={
+                "grant_type": "client_credentials",
+                "client_id": settings.backend_client_id,
+                "client_secret": settings.backend_client_secret,
+                "resource": settings.mcp_resource,
+            },
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        _svc_token = body["access_token"]
+        _svc_token_expires_at = time.time() + body["expires_in"]
+        return _svc_token
+```
+
+**`mcp_client.py`** -- `open_session(bearer_token: str | None, settings)`: when
+`bearer_token` is None, call `await _get_service_token(settings)` and use that.
+No changes to authenticated paths.
+
+**`config.py`** -- add two fields to `Settings`:
+
+| Variable                               | Default                  | Description                                                                               |
+|----------------------------------------|--------------------------|-------------------------------------------------------------------------------------------|
+| `DERIVA_CHATBOT_BACKEND_CLIENT_ID`     | `deriva-chatbot-backend` | Credenza client ID for service account                                                    |
+| `DERIVA_CHATBOT_BACKEND_CLIENT_SECRET` |                          | Client secret; if absent, log a startup warning -- anonymous MCP calls will fail with 401 |
+
+### mcp-core changes (same PR)
+
+- Delete `auth/anonymous.py` and `tests/test_anonymous.py`.
+- `server.py`: remove `allow_anonymous` branch, `AnonymousPermitMiddleware` import,
+  and `_allow_anonymous_verifier` / `_anonymous_resource_metadata_url` stash. The
+  `build_http_app()` function remains but simplifies to just the client-IP and
+  optional proxy-headers middleware.
+- `config.py`: remove `allow_anonymous: bool` field from `Settings`.
+- Update architecture section in this workplan and mcp-core workplan accordingly.
+
+### deriva-docker changes (same PR)
+
+**`client_registry.json.in`** -- add `deriva-chatbot-backend`:
+
+```json
+"deriva-chatbot-backend": {
+  "desc": "DERIVA Chatbot backend service account",
+  "enabled": true,
+  "adapter": {
+    "name": "client_secret",
+    "client_secret_hash": "${HASHED_DERIVA_CHATBOT_BACKEND_SECRET}"
+  },
+  "allowed_grant_types": ["client_credentials", "token_exchange"],
+  "allowed_auth_methods": ["client_secret_basic", "client_secret_post"],
+  "allowed_token_exchange_targets": ["urn:deriva:rest:service:all"],
+  "allowed_resources": ["https://your-host.example.com/mcp", "https://localhost/mcp"],
+  "allowed_scopes": ["openid"]
+}
+```
+
+**`generate-env.sh`** -- generate and hash `DERIVA_CHATBOT_BACKEND_SECRET`.
+
+**`deriva-mcp.env`** -- remove `DERIVA_MCP_ALLOW_ANONYMOUS` entirely (setting is gone).
+
+### Completion criteria
+
+- Anonymous browser sessions call MCP tools successfully via cached service token.
+- `DERIVA_MCP_ALLOW_ANONYMOUS`, `AnonymousPermitMiddleware`, and related tests are gone.
+- Full test suites pass in both mcp-ui and mcp-core.
+
+---
+
 ## Out of Scope
 
 - Multi-user conversation sharing or persistence across browser sessions (each session
