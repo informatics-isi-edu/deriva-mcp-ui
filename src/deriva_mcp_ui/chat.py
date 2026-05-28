@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, Any
 
 import litellm
 
-from .audit import audit_event
+from .audit import audit_event, user_label
 from .mcp_client import MCPAuthError, call_tool, get_prompt, list_tools, open_session
 
 if TYPE_CHECKING:
@@ -1250,23 +1250,6 @@ class ChatCancelled(Exception):
     """Raised when the client disconnects and the chat turn is aborted."""
 
 
-def _user_label(session: "Session", include_email: bool = True) -> str:
-    """Build a composite user identifier for LLM provider tracking and audit logs.
-
-    Pass include_email=False when sending to LLM providers that reject email addresses
-    in the user field (e.g. Anthropic).
-    """
-    cred = session.credenza_session or {}
-    client_block = cred.get("client") or {}
-    full_name = cred.get("full_name") or client_block.get("full_name") or ""
-    email = cred.get("email") or client_block.get("email") or ""
-    if include_email:
-        if full_name or email:
-            return f"{full_name} <{email}> ({session.user_id})"
-    else:
-        if full_name:
-            return f"{full_name} ({session.user_id})"
-    return session.user_id
 
 
 async def run_chat_turn(
@@ -1298,7 +1281,7 @@ async def run_chat_turn(
 
     Raises MCPAuthError if the MCP server rejects the bearer token.
     """
-    # RAG-only mode: bypass the LLM loop entirely.
+    # RAG-only mode: bypass the LLM loop entirely
     # Applies when the server tier is rag_only, OR the user has toggled the
     # per-session override (only reachable when allow_rag_toggle is True), OR
     # the user is anonymous and rag_only_when_anonymous is enabled.
@@ -1380,8 +1363,8 @@ async def run_chat_turn(
     if settings.llm_api_base:
         api_kwargs["api_base"] = settings.llm_api_base
 
-    user_label = _user_label(session)                        # full composite for audit
-    user_label_provider = _user_label(session, include_email=False)  # no email for LLM provider
+    user_label_audit    = user_label(session)
+    user_label_provider = user_label(session, include_email=False)
     prev_tool_names: set[str] = set()  # tools called in the previous loop iteration
 
     # Accumulators for the per-turn audit summary.
@@ -1460,7 +1443,7 @@ async def run_chat_turn(
                         "llm_api_call",
                         session_id=session.session_id,
                         turn=session.turn_count,
-                        user_id=user_label,
+                        user_id=user_label_audit,
                         model=model,
                         prompt_tokens=captured_usage.prompt_tokens,
                         completion_tokens=captured_usage.completion_tokens,

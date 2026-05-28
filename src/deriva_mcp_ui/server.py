@@ -17,7 +17,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from .audit import audit_event, init_audit_logger, set_client_ip
+from .audit import audit_event, init_audit_logger, set_client_ip, user_label
 from .auth import (
     ANON_COOKIE_NAME,
     RequireSession,
@@ -326,7 +326,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         session.primed_ermrest = ""
         await store.set(user_session_key(session.user_id), session)
         await store.delete(history_key(session.user_id))
-        audit_event("history_cleared", user_id=session.user_id)
+        audit_event("history_cleared", user_id=user_label(session))
         return JSONResponse({"status": "ok"})
 
     @app.post("/chat")
@@ -412,7 +412,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         audit_event(
                             "chat_turn",
                             session_id=session.session_id,
-                            user_id=session.user_id,
+                            user_id=user_label(session),
                             turn=session.turn_count,
                             tools_invoked=event.get("tools_invoked", []),
                             rag_triggered=event.get("rag_triggered", False),
@@ -434,12 +434,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 logger.info("Chat cancelled for %s", session.user_id)
                 audit_event("chat_cancelled",
                             session_id=session.session_id,
-                            user_id=session.user_id,
+                            user_id=user_label(session),
                             turn=session.turn_count,
                             duration_ms=round((time.monotonic() - t0) * 1000))
             except MCPAuthError:
                 _turn_error = "MCPAuthError"
-                audit_event("chat_error", user_id=session.user_id, error_type="MCPAuthError")
+                audit_event("chat_error", user_id=user_label(session), error_type="MCPAuthError")
                 if session.bearer_token is None:
                     detail = "Login required -- please log in to use this feature"
                 else:
@@ -452,14 +452,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 http_errs = [e for e in exc.exceptions if isinstance(e, httpx.HTTPStatusError)]
                 if http_errs and http_errs[0].response.status_code == 401:
                     _turn_error = "MCPAuthError"
-                    audit_event("chat_error", user_id=session.user_id, error_type="MCPAuthError")
+                    audit_event("chat_error", user_id=user_label(session), error_type="MCPAuthError")
                     detail = ("Login required -- please log in to use this feature"
                               if session.bearer_token is None
                               else "Session expired -- please log in again")
                     yield f"event: error\ndata: {json.dumps({'error': 'auth', 'detail': detail})}\n\n"
                 else:
                     _turn_error = f"ExceptionGroup: {exc}"
-                    audit_event("chat_error", user_id=session.user_id,
+                    audit_event("chat_error", user_id=user_label(session),
                                 error_type="ExceptionGroup", detail=str(exc))
                     logger.exception("Chat ExceptionGroup for user %s", session.user_id)
                     yield f"event: error\ndata: {json.dumps({'error': 'internal', 'detail': str(exc)})}\n\n"
@@ -467,7 +467,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 _turn_error = f"{type(exc).__name__}: {exc}"
                 audit_event(
                     "chat_error",
-                    user_id=session.user_id,
+                    user_id=user_label(session),
                     error_type=type(exc).__name__,
                     detail=str(exc),
                 )
@@ -480,7 +480,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     audit_event(
                         "chat_turn",
                         session_id=session.session_id,
-                        user_id=session.user_id,
+                        user_id=user_label(session),
                         tools_invoked=[],
                         rag_triggered=False,
                         rag_document_count=0,

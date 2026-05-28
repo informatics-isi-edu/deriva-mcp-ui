@@ -29,7 +29,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
 
-from .audit import audit_event
+from .audit import audit_event, user_label
 from .config import Settings
 from .storage.base import Session
 
@@ -331,7 +331,7 @@ async def callback(request: Request, code: str = "", state: str = "", error: str
     tok_entry = Session(user_id=user_id, bearer_token=bearer_token, created_at=now, last_active=now)
     await store.set(_token_key(bearer_token), tok_entry)
 
-    audit_event("login_success", user_id=user_id)
+    audit_event("login_success", user_id=user_label(session))
     response = RedirectResponse(f"{settings.public_url}/", status_code=302)
     _set_session_cookie(response, bearer_token, settings)
     response.delete_cookie(PKCE_COOKIE_NAME)
@@ -357,7 +357,7 @@ async def logout(request: Request) -> Response:
         if anon_id:
             session = await store.get(user_session_key(f"anonymous/{anon_id}"))
             if session is not None:
-                audit_event("logout", user_id=session.user_id)
+                audit_event("logout", user_id=user_label(session))
                 await store.delete(user_session_key(session.user_id))
         response = RedirectResponse(f"{settings.public_url}/", status_code=302)
         response.delete_cookie(ANON_COOKIE_NAME, path=f"{settings.public_url}/", httponly=True, samesite="lax")
@@ -366,7 +366,7 @@ async def logout(request: Request) -> Response:
     if bearer_token:
         tok_entry = await store.get(_token_key(bearer_token))
         if tok_entry:
-            audit_event("logout", user_id=tok_entry.user_id)
+            audit_event("logout", user_id=user_label(tok_entry))
             await store.delete(user_session_key(tok_entry.user_id))
         await store.delete(_token_key(bearer_token))
 
