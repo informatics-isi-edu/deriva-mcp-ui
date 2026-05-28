@@ -21,8 +21,12 @@ import os
 from contextvars import ContextVar
 from logging import StreamHandler
 from logging.handlers import SysLogHandler
+from typing import TYPE_CHECKING
 
 from pythonjsonlogger import json as jsonlogger
+
+if TYPE_CHECKING:
+    from .storage.base import Session
 
 _logger = logging.getLogger("deriva_mcp_ui.audit")
 _initialized = False
@@ -67,6 +71,25 @@ def init_audit_logger(use_syslog: bool = False) -> None:
 def set_client_ip(ip: str) -> None:
     """Store the client IP for the current request in the contextvar."""
     _client_ip_var.set(ip)
+
+
+def user_label(session: Session, include_email: bool = True) -> str:
+    """Build a composite user identifier for LLM provider tracking and audit logs.
+
+    Pass include_email=False when sending to LLM providers that reject email
+    addresses in the user field (e.g. Anthropic).
+    """
+    cred = session.credenza_session or {}
+    client_block = cred.get("client") or {}
+    full_name = cred.get("full_name") or client_block.get("full_name") or ""
+    email = cred.get("email") or client_block.get("email") or ""
+    if include_email:
+        if full_name or email:
+            return f"{full_name} <{email}> ({session.user_id})"
+    else:
+        if full_name:
+            return f"{full_name} ({session.user_id})"
+    return session.user_id
 
 
 def audit_event(event: str, **kwargs: object) -> None:
