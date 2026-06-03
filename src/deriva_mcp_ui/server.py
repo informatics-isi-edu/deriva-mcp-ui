@@ -161,6 +161,13 @@ async def _lifespan(app: FastAPI):  # pragma: no cover
     )
     app.state.store = store
 
+    if settings.operating_tier == "rag_only" and settings.mode != "rag_only":
+        logger.warning(
+            "Operating in RAG-only mode: DERIVA_CHATBOT_LLM_API_KEY is not set "
+            "and no local LLM (Ollama) is configured. "
+            "All chat responses will use semantic search only -- LLM tool-calling is disabled."
+        )
+
     async def _sweep_loop() -> None:
         while True:
             await asyncio.sleep(300)
