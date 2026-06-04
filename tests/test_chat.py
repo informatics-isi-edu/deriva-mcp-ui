@@ -1849,3 +1849,84 @@ async def test_rag_only_when_anonymous_does_not_affect_authenticated():
 
     assert open_session_called, "authenticated session should reach LLM path (open_session)"
     assert not rag_called, "rag_search must not be called for authenticated session"
+
+
+# ---------------------------------------------------------------------------
+# Excluded tools filtering
+# ---------------------------------------------------------------------------
+
+
+def _tools_passed_to_llm(mock_litellm) -> list[str]:
+    """Extract tool names from the tools= kwarg of the first acompletion call."""
+    call_kwargs = mock_litellm.acompletion.call_args
+    tools = (call_kwargs.kwargs or {}).get("tools") or []
+    return [(t.get("function") or {}).get("name", "") for t in (tools or [])]
+
+
+def _run_with_tools(sess, settings, message="hello"):
+    """Synchronously run one chat turn, returning the mock_litellm after."""
+    import asyncio
+    captured = {}
+
+    async def _run():
+        with patch("deriva_mcp_ui.chat.litellm") as mock_litellm:
+            mock_litellm.acompletion = AsyncMock(return_value=_text_stream(["ok"]))
+            mock_litellm.RateLimitError = litellm_rate_limit_error()
+            mock_litellm.ServiceUnavailableError = litellm_service_unavailable_error()
+            async for _ in run_chat_turn(message, sess, settings):
+                pass
+            captured["mock"] = mock_litellm
+
+    asyncio.get_event_loop().run_until_complete(_run())
+    return captured["mock"]
+
+
+def test_excluded_tools_no_config_passes_all():
+    """Without config, all tools are forwarded to the LLM unchanged."""
+    s = _settings()
+    sess = _session()
+    sess.tools = [_openai_tool("get_entities"), _openai_tool("deriva_ml_primer")]
+    mock = _run_with_tools(sess, s)
+    names = _tools_passed_to_llm(mock)
+    assert "get_entities" in names
+    assert "deriva_ml_primer" in names
+
+
+def test_excluded_tools_removes_named_tools():
+    """Named tools are removed from the list sent to the LLM."""
+    s = _settings(excluded_tools="deriva_ml_primer,get_guide")
+    sess = _session()
+    sess.tools = [
+        _openai_tool("get_entities"),
+        _openai_tool("deriva_ml_primer"),
+        _openai_tool("get_guide"),
+        _openai_tool("deriva_ml_list_datasets"),
+    ]
+    mock = _run_with_tools(sess, s)
+    names = _tools_passed_to_llm(mock)
+    assert "get_entities" in names
+    assert "deriva_ml_list_datasets" in names
+    assert "deriva_ml_primer" not in names
+    assert "get_guide" not in names
+
+
+def test_excluded_tools_no_match_passes_all():
+    """When no tools match the exclusion list, all are forwarded unchanged."""
+    s = _settings(excluded_tools="deriva_ml_primer,get_guide")
+    sess = _session()
+    sess.tools = [_openai_tool("get_entities"), _openai_tool("deriva_ml_list_datasets")]
+    mock = _run_with_tools(sess, s)
+    names = _tools_passed_to_llm(mock)
+    assert "get_entities" in names
+    assert "deriva_ml_list_datasets" in names
+
+
+def test_excluded_tools_whitespace_trimmed():
+    """Leading/trailing whitespace in the exclusion list is ignored."""
+    s = _settings(excluded_tools=" deriva_ml_primer , get_guide ")
+    sess = _session()
+    sess.tools = [_openai_tool("deriva_ml_primer"), _openai_tool("get_entities")]
+    mock = _run_with_tools(sess, s)
+    names = _tools_passed_to_llm(mock)
+    assert "deriva_ml_primer" not in names
+    assert "get_entities" in names

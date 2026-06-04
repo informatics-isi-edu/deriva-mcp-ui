@@ -117,6 +117,13 @@ class Settings(BaseSettings):
     # reachable except through the proxy.
     behind_proxy: bool = False
 
+    # Comma-separated tool names to permanently exclude from the LLM context.
+    # Use this to suppress agent-oriented or browser-irrelevant tools contributed
+    # by plugins (e.g. tools that generate local config files or require local
+    # filesystem access). See deriva-mcp-core docs/ADR-0002 for the long-term
+    # solution (tool-side applies_to scoping).
+    excluded_tools: str = ""
+
     # App syslog: enable for non-Docker deployments where syslog is the
     # only path to a centralized collector.  Leave False under Docker
     # (compose driver: syslog already forwards stderr).

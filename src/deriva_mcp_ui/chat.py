@@ -1342,6 +1342,16 @@ async def run_chat_turn(
         "content": [{"type": "text", "text": prompt, "cache_control": {"type": "ephemeral"}}],
     }
     tools_with_cache: list[dict[str, Any]] = list(session.tools or [])
+    _excluded = {t.strip() for t in settings.excluded_tools.split(",") if t.strip()}
+    if _excluded:
+        _before = len(tools_with_cache)
+        tools_with_cache = [
+            t for t in tools_with_cache
+            if (t.get("function") or {}).get("name", "") not in _excluded
+        ]
+        _filtered = _before - len(tools_with_cache)
+        if _filtered:
+            logger.debug("Excluded %d tools by name: %s", _filtered, _excluded)
     if tools_with_cache:
         tools_with_cache[-1] = {**tools_with_cache[-1], "cache_control": {"type": "ephemeral"}}
 
