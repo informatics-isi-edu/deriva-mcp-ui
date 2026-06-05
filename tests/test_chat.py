@@ -1877,7 +1877,7 @@ def _run_with_tools(sess, settings, message="hello"):
                 pass
             captured["mock"] = mock_litellm
 
-    asyncio.get_event_loop().run_until_complete(_run())
+    asyncio.run(_run())
     return captured["mock"]
 
 
