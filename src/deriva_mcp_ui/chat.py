@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import copy
 import gzip
 import json
 import logging
@@ -41,6 +42,35 @@ if TYPE_CHECKING:
     from .storage.base import Session
 
 logger = logging.getLogger(__name__)
+
+
+# JSON-schema keywords Gemini's function-declaration schema rejects (they are
+# non-functional metadata for tool-calling). Stripped recursively for Gemini.
+_GEMINI_UNSUPPORTED_KEYS = ("default", "additionalProperties", "$schema", "examples", "const", "title")
+
+
+def _sanitize_gemini_schema(node: Any) -> None:
+    """Recursively make a JSON schema Gemini-compatible.
+
+    Gemini is strict about function-declaration schemas: every `array` needs a
+    typed `items` (an empty `{}` is rejected as "items: missing field", e.g. the
+    ACL `owner` param generated from a bare `list`), and several JSON-schema
+    keywords are not accepted. Other providers tolerate these, so this runs only
+    for Gemini, on a deep copy.
+    """
+    if isinstance(node, dict):
+        for key in _GEMINI_UNSUPPORTED_KEYS:
+            node.pop(key, None)
+        if node.get("type") == "array":
+            items = node.get("items")
+            if not isinstance(items, dict) or not items.get("type"):
+                node["items"] = {"type": "string"}
+        for value in node.values():
+            _sanitize_gemini_schema(value)
+    elif isinstance(node, list):
+        for value in node:
+            _sanitize_gemini_schema(value)
+
 
 # Maximum tokens to request from the LLM per streaming call
 _MAX_TOKENS = 8192
@@ -1333,14 +1363,20 @@ async def run_chat_turn(
 
     prompt = system_prompt(settings, session, schema_context, guide_context, ermrest_syntax)
 
-    # Prompt caching: mark the system prompt and the tail of the tool list as
-    # cacheable so that repeated calls within the cache TTL reuse the tokenized
-    # blocks.  LiteLLM forwards cache_control to Anthropic (where it activates
-    # prompt caching at 0.1x token cost); other providers silently ignore it.
-    system_msg: dict[str, Any] = {
-        "role": "system",
-        "content": [{"type": "text", "text": prompt, "cache_control": {"type": "ephemeral"}}],
-    }
+    # Prompt caching is Anthropic-specific: cache_control activates Anthropic
+    # prompt caching (~0.1x token cost). OpenAI/Ollama ignore it, but Gemini
+    # mishandles it -- it routes the request through context-cache creation,
+    # which strictly validates and rejects our MCP tool schemas. So apply
+    # cache_control only for Anthropic; send a plain prompt to everyone else.
+    _model_id = settings.llm_model or ""
+    _is_anthropic = settings.llm_provider == "anthropic" or "claude" in _model_id.lower()
+    if _is_anthropic:
+        system_msg: dict[str, Any] = {
+            "role": "system",
+            "content": [{"type": "text", "text": prompt, "cache_control": {"type": "ephemeral"}}],
+        }
+    else:
+        system_msg = {"role": "system", "content": prompt}
     tools_with_cache: list[dict[str, Any]] = list(session.tools or [])
     _excluded = {t.strip() for t in settings.excluded_tools.split(",") if t.strip()}
     if _excluded:
@@ -1352,8 +1388,17 @@ async def run_chat_turn(
         _filtered = _before - len(tools_with_cache)
         if _filtered:
             logger.debug("Excluded %d tools by name: %s", _filtered, _excluded)
-    if tools_with_cache:
+    if tools_with_cache and _is_anthropic:
         tools_with_cache[-1] = {**tools_with_cache[-1], "cache_control": {"type": "ephemeral"}}
+
+    # Gemini strictly requires `items` on every array schema and 400s on tools
+    # that omit it (e.g. ACL `owner` params). Sanitize a deep copy so other
+    # providers and the cached session.tools are unaffected.
+    _is_gemini = "gemini" in _model_id.lower() or settings.llm_provider in ("gemini", "vertex_ai", "vertex_ai_beta")
+    if _is_gemini and tools_with_cache:
+        tools_with_cache = copy.deepcopy(tools_with_cache)
+        for _tool in tools_with_cache:
+            _sanitize_gemini_schema(_tool)
 
     messages: list[dict[str, Any]] = list(session.history) + [
         {"role": "user", "content": user_message}
@@ -1492,8 +1537,10 @@ async def run_chat_turn(
         if tool_calls:
             assistant_msg["tool_calls"] = tool_calls
 
-        if finish_reason != "tool_calls" or not tool_calls:
-            # End of turn -- no tools to execute
+        if not tool_calls:
+            # End of turn -- no tools to execute. (Gate on tool_calls presence, not
+            # finish_reason: Ollama/litellm report finish_reason="stop" even when it
+            # emitted tool calls, unlike OpenAI/Anthropic which report "tool_calls".)
             messages.append(assistant_msg)
             break
 

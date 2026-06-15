@@ -190,7 +190,7 @@ class Settings(BaseSettings):
         # auto-detection
         if self.llm_api_key:
             return "llm"
-        if self.llm_provider == "ollama" and self.llm_model:
+        if self.llm_provider in ("ollama", "ollama_chat") and self.llm_model:
             return "local"
         return "rag_only"
 
