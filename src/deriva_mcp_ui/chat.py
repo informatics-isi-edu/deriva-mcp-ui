@@ -1282,11 +1282,62 @@ class ChatCancelled(Exception):
 
 
 
+def _format_page_context(page_context: dict | None) -> str | None:
+    """Render the Chaise current-view context as a compact prompt block.
+
+    Returns None when there is nothing useful to inject. Column and facet lists
+    are capped so a wide table cannot bloat the turn. The per-facet ``source`` is
+    the ermrestjs facet source blob, passed through verbatim so the assistant can
+    reuse it when proposing a facet navigation.
+    """
+    if not page_context:
+        return None
+
+    _COL_CAP, _FACET_CAP = 60, 60
+    lines: list[str] = [
+        "The user is currently viewing this in Chaise. Use it to ground your "
+        "answers; prefer the display names below when talking to the user."
+    ]
+
+    schema, table = page_context.get("schema"), page_context.get("table")
+    display_name = page_context.get("displayName") or table
+    if table:
+        loc = f' (schema "{schema}", table "{table}")' if schema else ""
+        lines.append(f'- Table: "{display_name}"{loc}')
+    if page_context.get("totalRowCount") is not None:
+        lines.append(f"- Records currently shown: {page_context['totalRowCount']}")
+
+    columns = page_context.get("columns") or []
+    if columns:
+        names = [c.get("displayName") or c.get("name") for c in columns[:_COL_CAP]]
+        more = f" (+{len(columns) - _COL_CAP} more)" if len(columns) > _COL_CAP else ""
+        lines.append(f"- Visible columns: {', '.join(n for n in names if n)}{more}")
+
+    facets = page_context.get("facets") or []
+    if facets:
+        lines.append("- Facets available to filter by (display name :: source):")
+        for f in facets[:_FACET_CAP]:
+            fname = f.get("displayName") or ""
+            lines.append(f"    - {fname} :: {json.dumps(f.get('source'))}")
+        if len(facets) > _FACET_CAP:
+            lines.append(f"    - (+{len(facets) - _FACET_CAP} more facets)")
+
+    active = page_context.get("activeFilters") or []
+    if active:
+        summary = "; ".join(
+            f"{a.get('displayName')} = {a.get('summary')}" for a in active
+        )
+        lines.append(f"- Active filters: {summary}")
+
+    return "\n".join(lines)
+
+
 async def run_chat_turn(
     user_message: str,
     session: Session,
     settings: Settings,
     cancelled: asyncio.Event | None = None,
+    page_context: dict | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Run one chat turn and yield event dicts.
 
@@ -1404,6 +1455,17 @@ async def run_chat_turn(
         {"role": "user", "content": user_message}
     ]
 
+    # Current-view context (what the user is looking at in Chaise) is injected as
+    # an ephemeral system message for this turn only: it is kept out of `messages`
+    # so it is never persisted to history (it would go stale as the user
+    # navigates), and placed right after the cached system prompt so Anthropic's
+    # prompt cache (keyed on the prefix up to its cache_control block) is not
+    # churned by the per-turn context.
+    _view_text = _format_page_context(page_context)
+    view_msgs: list[dict[str, Any]] = (
+        [{"role": "system", "content": _view_text}] if _view_text else []
+    )
+
     def _check_cancelled() -> None:
         if cancelled is not None and cancelled.is_set():
             raise ChatCancelled()
@@ -1434,7 +1496,7 @@ async def run_chat_turn(
     while True:
         _check_cancelled()
 
-        llm_messages = [system_msg] + messages
+        llm_messages = [system_msg] + view_msgs + messages
 
         response_content = ""
         tool_call_acc: dict[int, dict[str, str]] = {}

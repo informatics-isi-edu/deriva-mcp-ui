@@ -149,6 +149,10 @@ class ChatRequest(BaseModel):
     hostname: str = ""
     catalog_id: str = ""
     session_id: str = ""  # client echoes back the session_id it received at page load
+    # what the user is currently viewing in Chaise (table, columns, facets);
+    # injected into the turn so the assistant can ground answers and propose
+    # facet navigations. Transient per-turn; not persisted in the session.
+    page_context: dict | None = None
 
 
 @asynccontextmanager
@@ -383,7 +387,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             _turn_summary_emitted = False
             _turn_error: str | None = None
             try:
-                async for event in run_chat_turn(body.message, session, s, cancelled=cancelled):
+                async for event in run_chat_turn(
+                    body.message, session, s, cancelled=cancelled, page_context=body.page_context
+                ):
                     # Check if client disconnected between yields
                     if await request.is_disconnected():
                         cancelled.set()
