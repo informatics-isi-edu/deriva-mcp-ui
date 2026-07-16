@@ -441,6 +441,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                             model=event.get("model"),
                             **diag_fields,
                         )
+                    elif event_type == "action":
+                        yield f"event: action\ndata: {json.dumps(event)}\n\n"
                     else:
                         yield f"event: tool\ndata: {json.dumps(event)}\n\n"
             except ChatCancelled:

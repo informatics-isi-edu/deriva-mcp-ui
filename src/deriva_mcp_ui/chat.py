@@ -280,6 +280,17 @@ def system_prompt(
         "This applies whenever catalog context (hostname + catalog_id) is known."
     )
     rules.append(
+        "**RULE 7D: NAVIGATE TO FACETED RESULTS.** When the user's request is a filter/discovery "
+        "intent over the table they are currently viewing (e.g. 'RNA-seq from mouse', 'datasets at "
+        "E14.5'), call `propose_facet_navigation` rather than only listing records: it hands them "
+        "into Chaise's faceted recordset, pre-filtered. Reference each facet by its number "
+        "(facet_index) from the current view's facet list, and give the constraint matching that "
+        "facet's mode: `choices` for a choices facet, `ranges` for a ranges facet, `not_null` for a "
+        "presence (check_presence) facet. Prefer values you have actually seen. A brief one-line "
+        "summary alongside the action is fine; the UI shows a preview the user applies. Only "
+        "available when the current view lists facets."
+    )
+    rules.append(
         "8. TOOL SELECTION PRIORITY:"
         "When the user asks a question, follow this priority order:"
         "a) DEFINITION / EXPLANATION QUESTIONS → Use your knowledge"
@@ -1282,13 +1293,80 @@ class ChatCancelled(Exception):
 
 
 
+# A UI-only pseudo-tool: offered to the LLM alongside the MCP tools (only when the
+# current view lists facets), never forwarded to the MCP server. The model picks
+# facets BY NUMBER (facet_index) from the current view and supplies the constraint
+# matching each facet's mode. When called, run_chat_turn emits an `action` event
+# for the Chaise panel to preview, then feeds back a synthetic tool result.
+_PROPOSE_FACET_NAVIGATION_TOOL: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "propose_facet_navigation",
+        "description": (
+            "Propose navigating to the current table's Chaise recordset, filtered by the given "
+            "facets. Call this when the request maps to filtering the current table by specific "
+            "values (e.g. 'RNA-seq from mouse'). Reference each facet by its number (facet_index) "
+            "from the current view's facet list and give the constraint matching its mode. Do NOT "
+            "run a query for this; the UI shows the user a preview they click to apply. Prefer "
+            "values you have actually seen."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "filters": {
+                    "type": "array",
+                    "description": "Facets to filter by, combined with AND.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "facet_index": {
+                                "type": "integer",
+                                "description": "Number of the facet in the current view's facet list.",
+                            },
+                            "choices": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Values to match, for a choices facet.",
+                            },
+                            "ranges": {
+                                "type": "array",
+                                "description": "Ranges to match, for a ranges facet.",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "min": {"type": "string"},
+                                        "max": {"type": "string"},
+                                        "min_exclusive": {"type": "boolean"},
+                                        "max_exclusive": {"type": "boolean"},
+                                    },
+                                },
+                            },
+                            "not_null": {
+                                "type": "boolean",
+                                "description": "Set true for a presence (check_presence) facet.",
+                            },
+                        },
+                        "required": ["facet_index"],
+                    },
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Short human-readable summary of the filter, shown to the user.",
+                },
+            },
+            "required": ["filters", "description"],
+        },
+    },
+}
+
+
 def _format_page_context(page_context: dict | None) -> str | None:
     """Render the Chaise current-view context as a compact prompt block.
 
     Returns None when there is nothing useful to inject. Column and facet lists
-    are capped so a wide table cannot bloat the turn. The per-facet ``source`` is
-    the ermrestjs facet source blob, passed through verbatim so the assistant can
-    reuse it when proposing a facet navigation.
+    are capped so a wide table cannot bloat the turn. Facets are listed by their
+    ermrestjs ``index`` so the assistant can reference one as ``facet_index`` when
+    proposing a facet navigation.
     """
     if not page_context:
         return None
@@ -1300,7 +1378,7 @@ def _format_page_context(page_context: dict | None) -> str | None:
     ]
 
     schema, table = page_context.get("schema"), page_context.get("table")
-    display_name = page_context.get("displayName") or table
+    display_name = page_context.get("displayname") or table
     if table:
         loc = f' (schema "{schema}", table "{table}")' if schema else ""
         lines.append(f'- Table: "{display_name}"{loc}')
@@ -1309,23 +1387,24 @@ def _format_page_context(page_context: dict | None) -> str | None:
 
     columns = page_context.get("columns") or []
     if columns:
-        names = [c.get("displayName") or c.get("name") for c in columns[:_COL_CAP]]
+        names = [c.get("displayname") or c.get("name") for c in columns[:_COL_CAP]]
         more = f" (+{len(columns) - _COL_CAP} more)" if len(columns) > _COL_CAP else ""
         lines.append(f"- Visible columns: {', '.join(n for n in names if n)}{more}")
 
     facets = page_context.get("facets") or []
     if facets:
-        lines.append("- Facets available to filter by (display name :: source):")
+        lines.append("- Facets available to filter by (use the number as facet_index):")
         for f in facets[:_FACET_CAP]:
-            fname = f.get("displayName") or ""
-            lines.append(f"    - {fname} :: {json.dumps(f.get('source'))}")
+            lines.append(
+                f"    {f.get('index')}. {f.get('displayname') or ''} ({f.get('preferredMode') or ''})"
+            )
         if len(facets) > _FACET_CAP:
-            lines.append(f"    - (+{len(facets) - _FACET_CAP} more facets)")
+            lines.append(f"    (+{len(facets) - _FACET_CAP} more facets)")
 
     active = page_context.get("activeFilters") or []
     if active:
         summary = "; ".join(
-            f"{a.get('displayName')} = {a.get('summary')}" for a in active
+            f"{a.get('displayname')} = {a.get('summary')}" for a in active
         )
         lines.append(f"- Active filters: {summary}")
 
@@ -1429,6 +1508,11 @@ async def run_chat_turn(
     else:
         system_msg = {"role": "system", "content": prompt}
     tools_with_cache: list[dict[str, Any]] = list(session.tools or [])
+    # Offer the UI-only facet-navigation action, but only when the current view
+    # lists facets (the model selects them by number).
+    _pc_facets = page_context.get("facets") if isinstance(page_context, dict) else None
+    if isinstance(_pc_facets, list) and _pc_facets:
+        tools_with_cache.append(_PROPOSE_FACET_NAVIGATION_TOOL)
     _excluded = {t.strip() for t in settings.excluded_tools.split(",") if t.strip()}
     if _excluded:
         _before = len(tools_with_cache)
@@ -1632,6 +1716,32 @@ async def run_chat_turn(
                 tc_args = {}
 
             _check_cancelled()
+
+            # propose_facet_navigation is a UI action, not a real MCP tool: emit an
+            # action event for the Chaise panel to preview, feed back a synthetic
+            # tool result so the tool_call is satisfied, and never call MCP.
+            if tc_name == "propose_facet_navigation":
+                _audit_tools_invoked.append(tc_name)
+                _pc = page_context if isinstance(page_context, dict) else {}
+                _filters = tc_args.get("filters")
+                if isinstance(_filters, list) and _filters:
+                    yield {
+                        "type": "action",
+                        "action": "navigate_facets",
+                        "schema": _pc.get("schema", ""),
+                        "table": _pc.get("table", ""),
+                        "filters": _filters,
+                        "description": tc_args.get("description", ""),
+                    }
+                    _note = (
+                        "Facet navigation proposed to the user; they will review and apply it. "
+                        "Do not repeat the full proposal as prose."
+                    )
+                else:
+                    _note = "No filters were provided; answer the user directly instead."
+                messages.append({"role": "tool", "tool_call_id": tc_id, "content": _note})
+                continue
+
             yield {"type": "tool_start", "name": tc_name, "input": tc_args}
             _audit_tools_invoked.append(tc_name)
             try:
